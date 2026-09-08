@@ -1,0 +1,88 @@
+{
+  "model_int32_1x256_dynamic_range_quant.tflite": {
+    "path": "D:/modelprep/out2\\model_int32_1x256_dynamic_range_quant.tflite",
+    "size": 90.35596,
+    "cos_min": NaN,
+    "cos_mean": NaN,
+    "inputs": [
+      [
+        "input_ids",
+        [
+          1,
+          256
+        ],
+        "<class 'numpy.int32'>"
+      ],
+      [
+        "attention_mask",
+        [
+          1,
+          256
+        ],
+        "<class 'numpy.int32'>"
+      ],
+      [
+        "token_type_ids",
+        [
+          1,
+          256
+        ],
+        "<class 'numpy.int32'>"
+      ]
+    ],
+    "outputs": [
+      [
+        "last_hidden_state",
+        [
+          1,
+          256,
+          384
+        ],
+        "<class 'numpy.float32'>"
+      ]
+    ]
+  },
+  "model_int32_1x256_float32.tflite": {
+    "path": "D:/modelprep/out2\\model_int32_1x256_float32.tflite",
+    "size": 90.429848,
+    "cos_min": 0.9999999999994016,
+    "cos_mean": 0.9999999999995711,
+    "inputs": [
+      [
+        "input_ids",
+        [
+          1,
+          256
+        ],
+        "<class 'numpy.int32'>"
+      ],
+      [
+        "attention_mask",
+        [
+          1,
+          256
+        ],
+        "<class 'numpy.int32'>"
+      ],
+      [
+        "token_type_ids",
+        [
+          1,
+          256
+        ],
+        "<class 'numpy.int32'>"
+      ]
+    ],
+    "outputs": [
+      [
+        "last_hidden_state",
+        [
+          1,
+          256,
+          384
+        ],
+        "<class 'numpy.float32'>"
+      ]
+    ]
+  }
+}

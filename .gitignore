@@ -1,0 +1,39 @@
+# ---------------------------------------------------------------- toolchains
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+
+# ------------------------------------------------------------- build output
+build/
+out/
+.dart_tool/
+.gradle/
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# Machine-specific SDK paths, not portable and not interesting to anyone else.
+local.properties
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ------------------------------------------------------------ model weights
+# The MiniLM export is ~90 MB, which is past the point where it belongs in
+# git. vault_rag_test/modelprep/ regenerates it end to end (download ONNX,
+# rewrite to int32/static, convert, verify) — see BUILD_NOTES.md.
+*.tflite
+*.onnx
+vault_rag_test/assets/models/minilm_l6_v2.tflite
+
+# Piper voice models are similarly large and re-downloadable.
+voices/
+*.onnx.json
+
+# Rendered video is a build artifact; the project regenerates it.
+vault_video/out/
+*.mp4

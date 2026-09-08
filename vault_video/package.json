@@ -1,0 +1,27 @@
+{
+  "name": "vault-explainer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Five-minute conceptual explainer for the on-device RAG vault architecture.",
+  "scripts": {
+    "studio": "remotion studio",
+    "render": "remotion render Vault out/vault.mp4 --props=./render-props.json",
+    "still": "remotion still Vault out/still.png --props=./render-props.json",
+    "typecheck": "tsc --noEmit",
+    "tts": "python tts/synthesize.py",
+    "narration": "node script/gen-narration.mjs"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.522",
+    "@remotion/google-fonts": "4.0.522",
+    "@remotion/shapes": "4.0.522",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "remotion": "4.0.522"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.7",
+    "typescript": "5.9.3"
+  }
+}

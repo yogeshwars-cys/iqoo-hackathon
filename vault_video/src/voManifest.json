@@ -1,0 +1,605 @@
+[
+  {
+    "scene": 0,
+    "index": 0,
+    "file": "01-problem-00.wav",
+    "t": 0.5,
+    "budget": 4.0,
+    "duration": 3.738,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 0,
+    "index": 1,
+    "file": "01-problem-01.wav",
+    "t": 4.7,
+    "budget": 4.5,
+    "duration": 4.249,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 0,
+    "index": 2,
+    "file": "01-problem-02.wav",
+    "t": 9.4,
+    "budget": 4.2,
+    "duration": 3.251,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 0,
+    "index": 3,
+    "file": "01-problem-03.wav",
+    "t": 13.8,
+    "budget": 4.0,
+    "duration": 3.1,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 0,
+    "index": 4,
+    "file": "01-problem-04.wav",
+    "t": 18.0,
+    "budget": 5.2,
+    "duration": 4.644,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 0,
+    "index": 5,
+    "file": "01-problem-05.wav",
+    "t": 23.4,
+    "budget": 3.2,
+    "duration": 2.206,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 0,
+    "index": 6,
+    "file": "01-problem-06.wav",
+    "t": 26.8,
+    "budget": 4.6,
+    "duration": 3.762,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 0,
+    "index": 7,
+    "file": "01-problem-07.wav",
+    "t": 31.6,
+    "budget": 4.4,
+    "duration": 4.203,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 0,
+    "index": 8,
+    "file": "01-problem-08.wav",
+    "t": 36.2,
+    "budget": 4.6,
+    "duration": 3.611,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 0,
+    "index": 9,
+    "file": "01-problem-09.wav",
+    "t": 41.0,
+    "budget": 5.4,
+    "duration": 4.818,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 0,
+    "index": 10,
+    "file": "01-problem-10.wav",
+    "t": 46.6,
+    "budget": 4.0,
+    "duration": 2.345,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 0,
+    "index": 11,
+    "file": "01-problem-11.wav",
+    "t": 51.0,
+    "budget": 2.4,
+    "duration": 1.579,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 0,
+    "index": 12,
+    "file": "01-problem-12.wav",
+    "t": 53.6,
+    "budget": 5.0,
+    "duration": 3.901,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 1,
+    "index": 0,
+    "file": "02-solution-00.wav",
+    "t": 0.5,
+    "budget": 3.2,
+    "duration": 1.904,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 1,
+    "index": 1,
+    "file": "02-solution-01.wav",
+    "t": 4.0,
+    "budget": 4.0,
+    "duration": 2.949,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 1,
+    "index": 2,
+    "file": "02-solution-02.wav",
+    "t": 8.2,
+    "budget": 5.0,
+    "duration": 3.762,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 1,
+    "index": 3,
+    "file": "02-solution-03.wav",
+    "t": 13.4,
+    "budget": 4.4,
+    "duration": 3.855,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 1,
+    "index": 4,
+    "file": "02-solution-04.wav",
+    "t": 18.0,
+    "budget": 4.0,
+    "duration": 2.844,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 1,
+    "index": 5,
+    "file": "02-solution-05.wav",
+    "t": 22.2,
+    "budget": 4.6,
+    "duration": 3.622,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 1,
+    "index": 6,
+    "file": "02-solution-06.wav",
+    "t": 27.0,
+    "budget": 4.0,
+    "duration": 3.111,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 1,
+    "index": 7,
+    "file": "02-solution-07.wav",
+    "t": 31.2,
+    "budget": 5.0,
+    "duration": 4.574,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 1,
+    "index": 8,
+    "file": "02-solution-08.wav",
+    "t": 36.4,
+    "budget": 4.4,
+    "duration": 3.553,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 1,
+    "index": 9,
+    "file": "02-solution-09.wav",
+    "t": 41.0,
+    "budget": 2.8,
+    "duration": 1.95,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 1,
+    "index": 10,
+    "file": "02-solution-10.wav",
+    "t": 44.0,
+    "budget": 3.4,
+    "duration": 2.647,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 1,
+    "index": 11,
+    "file": "02-solution-11.wav",
+    "t": 47.6,
+    "budget": 4.4,
+    "duration": 3.599,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 1,
+    "index": 12,
+    "file": "02-solution-12.wav",
+    "t": 52.2,
+    "budget": 4.6,
+    "duration": 3.773,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 2,
+    "index": 0,
+    "file": "03-implementation-00.wav",
+    "t": 0.5,
+    "budget": 2.8,
+    "duration": 2.125,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 2,
+    "index": 1,
+    "file": "03-implementation-01.wav",
+    "t": 3.5,
+    "budget": 4.6,
+    "duration": 4.574,
+    "lengthScale": 0.97
+  },
+  {
+    "scene": 2,
+    "index": 2,
+    "file": "03-implementation-02.wav",
+    "t": 8.1,
+    "budget": 4.8,
+    "duration": 4.76,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 2,
+    "index": 3,
+    "file": "03-implementation-03.wav",
+    "t": 13.1,
+    "budget": 4.4,
+    "duration": 3.379,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 2,
+    "index": 4,
+    "file": "03-implementation-04.wav",
+    "t": 17.7,
+    "budget": 5.0,
+    "duration": 4.946,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 2,
+    "index": 5,
+    "file": "03-implementation-05.wav",
+    "t": 22.9,
+    "budget": 4.8,
+    "duration": 3.924,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 2,
+    "index": 6,
+    "file": "03-implementation-06.wav",
+    "t": 27.9,
+    "budget": 4.6,
+    "duration": 3.901,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 2,
+    "index": 7,
+    "file": "03-implementation-07.wav",
+    "t": 32.7,
+    "budget": 4.4,
+    "duration": 3.506,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 2,
+    "index": 8,
+    "file": "03-implementation-08.wav",
+    "t": 37.3,
+    "budget": 3.6,
+    "duration": 2.682,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 2,
+    "index": 9,
+    "file": "03-implementation-09.wav",
+    "t": 41.1,
+    "budget": 4.4,
+    "duration": 4.18,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 2,
+    "index": 10,
+    "file": "03-implementation-10.wav",
+    "t": 45.7,
+    "budget": 4.2,
+    "duration": 2.949,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 2,
+    "index": 11,
+    "file": "03-implementation-11.wav",
+    "t": 50.1,
+    "budget": 3.8,
+    "duration": 2.659,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 2,
+    "index": 12,
+    "file": "03-implementation-12.wav",
+    "t": 54.1,
+    "budget": 4.6,
+    "duration": 3.228,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 3,
+    "index": 0,
+    "file": "04-novelty-00.wav",
+    "t": 0.5,
+    "budget": 2.8,
+    "duration": 1.765,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 3,
+    "index": 1,
+    "file": "04-novelty-01.wav",
+    "t": 3.5,
+    "budget": 2.6,
+    "duration": 1.985,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 3,
+    "index": 2,
+    "file": "04-novelty-02.wav",
+    "t": 6.3,
+    "budget": 4.0,
+    "duration": 3.158,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 3,
+    "index": 3,
+    "file": "04-novelty-03.wav",
+    "t": 10.5,
+    "budget": 5.2,
+    "duration": 4.342,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 3,
+    "index": 4,
+    "file": "04-novelty-04.wav",
+    "t": 16.0,
+    "budget": 3.8,
+    "duration": 3.111,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 3,
+    "index": 5,
+    "file": "04-novelty-05.wav",
+    "t": 20.0,
+    "budget": 4.6,
+    "duration": 4.18,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 3,
+    "index": 6,
+    "file": "04-novelty-06.wav",
+    "t": 24.8,
+    "budget": 4.4,
+    "duration": 3.587,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 3,
+    "index": 7,
+    "file": "04-novelty-07.wav",
+    "t": 29.4,
+    "budget": 2.8,
+    "duration": 1.707,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 3,
+    "index": 8,
+    "file": "04-novelty-08.wav",
+    "t": 32.4,
+    "budget": 4.4,
+    "duration": 3.297,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 3,
+    "index": 9,
+    "file": "04-novelty-09.wav",
+    "t": 37.0,
+    "budget": 2.0,
+    "duration": 1.045,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 3,
+    "index": 10,
+    "file": "04-novelty-10.wav",
+    "t": 39.2,
+    "budget": 4.6,
+    "duration": 3.355,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 3,
+    "index": 11,
+    "file": "04-novelty-11.wav",
+    "t": 44.0,
+    "budget": 4.2,
+    "duration": 3.483,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 3,
+    "index": 12,
+    "file": "04-novelty-12.wav",
+    "t": 48.4,
+    "budget": 4.0,
+    "duration": 3.32,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 3,
+    "index": 13,
+    "file": "04-novelty-13.wav",
+    "t": 52.6,
+    "budget": 4.4,
+    "duration": 2.949,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 4,
+    "index": 0,
+    "file": "05-future-00.wav",
+    "t": 0.5,
+    "budget": 2.4,
+    "duration": 1.057,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 4,
+    "index": 1,
+    "file": "05-future-01.wav",
+    "t": 3.1,
+    "budget": 3.8,
+    "duration": 2.984,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 4,
+    "index": 2,
+    "file": "05-future-02.wav",
+    "t": 7.1,
+    "budget": 3.4,
+    "duration": 3.019,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 4,
+    "index": 3,
+    "file": "05-future-03.wav",
+    "t": 10.7,
+    "budget": 3.4,
+    "duration": 2.786,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 4,
+    "index": 4,
+    "file": "05-future-04.wav",
+    "t": 14.3,
+    "budget": 2.8,
+    "duration": 1.509,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 4,
+    "index": 5,
+    "file": "05-future-05.wav",
+    "t": 17.3,
+    "budget": 5.2,
+    "duration": 5.004,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 4,
+    "index": 6,
+    "file": "05-future-06.wav",
+    "t": 22.7,
+    "budget": 3.8,
+    "duration": 2.508,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 4,
+    "index": 7,
+    "file": "05-future-07.wav",
+    "t": 26.7,
+    "budget": 2.8,
+    "duration": 1.846,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 4,
+    "index": 8,
+    "file": "05-future-08.wav",
+    "t": 29.7,
+    "budget": 5.2,
+    "duration": 4.899,
+    "lengthScale": 0.984
+  },
+  {
+    "scene": 4,
+    "index": 9,
+    "file": "05-future-09.wav",
+    "t": 34.9,
+    "budget": 4.8,
+    "duration": 3.808,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 4,
+    "index": 10,
+    "file": "05-future-10.wav",
+    "t": 39.9,
+    "budget": 4.8,
+    "duration": 4.122,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 4,
+    "index": 11,
+    "file": "05-future-11.wav",
+    "t": 44.9,
+    "budget": 4.4,
+    "duration": 3.1,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 4,
+    "index": 12,
+    "file": "05-future-12.wav",
+    "t": 49.5,
+    "budget": 5.0,
+    "duration": 3.286,
+    "lengthScale": 1.06
+  },
+  {
+    "scene": 4,
+    "index": 13,
+    "file": "05-future-13.wav",
+    "t": 54.7,
+    "budget": 3.6,
+    "duration": 2.159,
+    "lengthScale": 1.06
+  }
+]

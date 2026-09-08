@@ -1,0 +1,33 @@
+name: vault_rag_test
+description: Zero-trust on-device RAG test build — iQOO Hackathon 2026 prep.
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  # file_picker 12.x and path_provider 2.1.6 both require Dart >= 3.10.
+  sdk: '>=3.10.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # 0.12.x pulls the native LiteRT binaries from Maven itself, so the manual
+  # jniLibs install script older guides describe is no longer needed.
+  tflite_flutter: ^0.12.1
+  # Deliberately on sqlite3 2.x + sqlite3_flutter_libs. sqlite3 3.x replaces
+  # that plugin with Dart build hooks, which are still experimental for
+  # Flutter Android — not what you want the night before a hackathon.
+  sqlite3: ^2.9.0
+  sqlite3_flutter_libs: ^0.5.42
+  path_provider: ^2.1.6
+  file_picker: ^12.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/models/minilm_l6_v2.tflite
+    - assets/models/vocab.txt
