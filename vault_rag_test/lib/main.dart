@@ -50,16 +50,26 @@ import 'bridge/bridge_client.dart';
 import 'core/llm/llama_runtime.dart';
 import 'core/llm/llm_runtime.dart';
 import 'core/llm/model_settings.dart';
+import 'core/security/capsule_signer.dart';
 import 'core/vault_engine.dart';
+import 'link/vault_link_service.dart';
 import 'telemetry/benchmark_runner.dart';
 import 'telemetry/compute_telemetry.dart';
+import 'telemetry/device_info.dart';
 import 'telemetry/llm_benchmark_runner.dart';
 import 'ui/bridge_page.dart';
+import 'ui/link_page.dart';
 import 'ui/model_page.dart';
 import 'ui/stats_page.dart';
 import 'ui/theme.dart';
 import 'ui/vault_page.dart';
 import 'ui/widgets/common.dart';
+
+/// True for every build except the `lan` flavor — including builds with no
+/// flavor at all, so the safe answer is the default. The Android manifest is
+/// the real enforcement (no INTERNET permission in airgap release); this
+/// only keeps the UI from offering what the OS would refuse.
+const bool kAirGapped = appFlavor != 'lan';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -103,6 +113,7 @@ class _AppShellState extends State<AppShell> {
   late final BenchmarkRunner _benchmark;
   late final LlmBenchmarkRunner _llmBenchmark;
   late final BridgeClient _bridge;
+  late final VaultLinkService _link;
   AppLifecycleListener? _lifecycle;
 
   int _tab = 0;
@@ -116,7 +127,13 @@ class _AppShellState extends State<AppShell> {
   void initState() {
     super.initState();
 
-    _engine = VaultEngine();
+    _engine = VaultEngine(
+      // Capsules are signed with the platform-reported device label rather
+      // than a hardcoded marketing name.
+      signer: CapsuleSigner(
+        deviceLabel: () async => (await DeviceFacts.load()).summary,
+      ),
+    );
     // The engine reports native inference time to the meter, which the
     // telemetry service turns into the "inference duty" lane. A callback
     // rather than an import, so core/ has no dependency on telemetry/.
@@ -141,6 +158,13 @@ class _AppShellState extends State<AppShell> {
     _benchmark = BenchmarkRunner(engine: _engine, telemetry: _telemetry);
     _llmBenchmark = LlmBenchmarkRunner(llm: _llm, telemetry: _telemetry);
     _bridge = BridgeClient(
+      engine: _engine,
+      telemetrySnapshot: _telemetry.snapshot,
+      networkAllowed: !kAirGapped,
+    );
+    // Clipboard-carried alternative to the WebSocket bridge above — same
+    // engine, same telemetry snapshot, no socket. See vault_link_service.dart.
+    _link = VaultLinkService(
       engine: _engine,
       telemetrySnapshot: _telemetry.snapshot,
     );
@@ -179,6 +203,10 @@ class _AppShellState extends State<AppShell> {
         databasePath: '${dir.path}/vault.db',
       );
 
+      // Pairing code, AES-GCM-encrypted under the keystore master key.
+      _link.pairingStore = KeystorePairingStore(dir.path);
+      await _link.restorePairing();
+
       _modelSettings = await ModelSettings.load(dir.path);
       _telemetry.start();
 
@@ -204,6 +232,7 @@ class _AppShellState extends State<AppShell> {
   void dispose() {
     _lifecycle?.dispose();
     _bridge.dispose();
+    _link.dispose();
     _llm.dispose();
     _llama.dispose();
     _telemetry.dispose();
@@ -241,7 +270,9 @@ class _AppShellState extends State<AppShell> {
             builder: (context, _) => Padding(
               padding: const EdgeInsets.only(right: VaultSpace.lg),
               child: StatusPill(
-                label: _bridge.isConnected ? 'LINKED' : 'LOCAL',
+                label: _bridge.isConnected
+                    ? 'LINKED'
+                    : (kAirGapped ? 'AIR-GAP' : 'LOCAL'),
                 color: _bridge.isConnected
                     ? VaultColors.accent
                     : VaultColors.faint,
@@ -275,7 +306,11 @@ class _AppShellState extends State<AppShell> {
                 await _modelSettings.save(_documentsPath);
               },
             ),
-            BridgePage(client: _bridge, documentsPath: _documentsPath),
+            if (kAirGapped)
+              const _AirGapNotice()
+            else
+              BridgePage(client: _bridge, documentsPath: _documentsPath),
+            LinkPage(link: _link),
             StatsPage(
               telemetry: _telemetry,
               benchmark: _benchmark,
@@ -307,12 +342,39 @@ class _AppShellState extends State<AppShell> {
             label: 'Bridge',
           ),
           NavigationDestination(
+            icon: Icon(Icons.content_paste_outlined),
+            selectedIcon: Icon(Icons.content_paste_rounded),
+            label: 'Link',
+          ),
+          NavigationDestination(
             icon: Icon(Icons.insights_outlined),
             selectedIcon: Icon(Icons.insights_rounded),
             label: 'Stats',
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Shown in place of the Bridge tab in the air-gapped build.
+class _AirGapNotice extends StatelessWidget {
+  const _AirGapNotice();
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(VaultSpace.lg),
+      children: const [
+        SectionCard(
+          title: 'Air-gapped build',
+          subtitle: 'This APK requests no network permission, so the LAN '
+              'bridge is not available. Use VaultLink on the Link tab, or '
+              'install the lan flavor for the WebSocket bridge.',
+          child: CodeBlock(
+              'flutter build apk --release --flavor lan'),
+        ),
+      ],
     );
   }
 }

@@ -60,6 +60,36 @@ android {
         }
     }
 
+    // NETWORK ISOLATION IS A BUILD PROPERTY, NOT A RUNTIME PROMISE.
+    //
+    //   airgap  (default)  the release APK requests zero network permissions.
+    //                      src/main declares none, and src/airgapRelease
+    //                      strips INTERNET / ACCESS_NETWORK_STATE even if a
+    //                      plugin manifest tries to merge them in. The Dart
+    //                      side reads appFlavor and hides the LAN bridge.
+    //   lan                keeps INTERNET for the WebSocket bridge to
+    //                      bridge_server.py (src/lan/AndroidManifest.xml).
+    //
+    // Debug/profile builds of either flavor still get INTERNET from
+    // src/debug and src/profile — Flutter's tooling needs it to reach the
+    // Dart VM service — which is why the removal lives in the
+    // variant-specific airgapRelease source set rather than in airgap/.
+    //
+    // Verify after every release build:
+    //   aapt2 dump permissions build/app/outputs/flutter-apk/app-airgap-release.apk
+    flavorDimensions += "network"
+    productFlavors {
+        create("airgap") {
+            dimension = "network"
+            isDefault = true
+        }
+        create("lan") {
+            dimension = "network"
+            applicationIdSuffix = ".lan"
+            versionNameSuffix = "-lan"
+        }
+    }
+
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.

@@ -1,31 +1,17 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- INTERNET is the only permission this app requests, and it is here
-         solely for the desktop co-processor bridge: the phone dials out to
-         a laptop running bridge_server.py over the LAN.
+    <!-- NO NETWORK PERMISSION IN THE MAIN MANIFEST.
 
-         Everything else in the app - picking files, chunking, embedding,
-         the vector store, retrieval, the telemetry charts and the benchmark
-         - runs with the radios off and always will. The bridge is opt-in
-         per session, defaults to disconnected, and the screen that enables
-         it says plainly that retrieved chunks leave the device once it is
-         up. See lib/ui/bridge_page.dart.
+         The default `airgap` flavor ships with zero network permissions;
+         src/airgapRelease/AndroidManifest.xml additionally strips INTERNET
+         and ACCESS_NETWORK_STATE if any library manifest merges them in.
+         Only the `lan` flavor (src/lan/AndroidManifest.xml) requests
+         INTERNET, for the opt-in WebSocket bridge to bridge_server.py.
 
-         Worth knowing for anyone auditing this: ws:// to a private address
-         is cleartext, and there is deliberately no
-         android:usesCleartextTraffic="true" here. That attribute governs
-         the platform HTTP stack; dart:io's WebSocket uses the Dart VM's own
-         sockets and never consults it, so setting the flag would weaken the
-         app's declared posture for every future component without being
-         needed by this one. Android's network security config cannot
-         express "private ranges only" - it keys on domains, not CIDR - so
-         there is no narrower flag worth adding either.
-
-         No other permission is needed: files arrive through the system
-         document picker (which grants per-file access without one) and
-         everything else stays in app-private storage. -->
-    <uses-permission android:name="android.permission.INTERNET" />
+         Files arrive through the system document picker (per-file grants,
+         no permission), VaultLink travels over the clipboard (no socket),
+         and everything else stays in app-private storage. -->
 
     <!--
 
@@ -40,10 +26,8 @@
 
          Flutter's tooling also injects INTERNET into the debug and profile
          manifests so `flutter run` can reach the Dart VM. That used to be
-         the only place it appeared, and a release build was the proof of
-         the no-network claim. Since the bridge landed, release carries it
-         too, so the claim is now demonstrated at runtime instead: leave the
-         Bridge tab disconnected and no socket is ever opened. -->
+         the only place it appeared, and the airgap release build is again
+         the proof of the no-network claim. -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE"
         tools:node="remove" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"

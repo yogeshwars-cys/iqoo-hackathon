@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- LAN-bridge flavor only. The phone dials out to bridge_server.py on
+         the local network. ws:// to a private address is cleartext; see
+         lib/ui/bridge_page.dart for the disclosure shown before connecting.
+         There is deliberately no android:usesCleartextTraffic: dart:io
+         sockets never consult it. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+</manifest>

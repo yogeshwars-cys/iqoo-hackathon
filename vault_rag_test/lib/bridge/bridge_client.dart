@@ -64,7 +64,15 @@ class BridgeClient extends ChangeNotifier {
   /// the bridge does not depend on the stats screen being built.
   final Map<String, dynamic> Function() telemetrySnapshot;
 
-  BridgeClient({required this.engine, required this.telemetrySnapshot});
+  /// False in the air-gapped build: [connect] refuses before any socket is
+  /// attempted. The manifest (no INTERNET permission) is the real guard.
+  final bool networkAllowed;
+
+  BridgeClient({
+    required this.engine,
+    required this.telemetrySnapshot,
+    this.networkAllowed = true,
+  });
 
   WebSocket? _socket;
   StreamSubscription<dynamic>? _subscription;
@@ -111,6 +119,12 @@ class BridgeClient extends ChangeNotifier {
   }
 
   Future<void> connect(String host, {int port = 8000}) async {
+    if (!networkAllowed) {
+      // Air-gapped build: no INTERNET permission, and no attempt either.
+      _emit('Bridge disabled in the air-gapped build', BridgeEventKind.failure);
+      notifyListeners();
+      return;
+    }
     _host = host.trim();
     _port = port;
     _stopRequested = false;

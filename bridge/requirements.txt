@@ -6,3 +6,8 @@ websockets>=12.0
 # Only needed for iqoo_mcp_server.py. Both major versions work — 2.x renamed
 # FastMCP to MCPServer and the server aliases whichever one is installed.
 mcp>=1.2
+
+# Capsule signature verification and VAULTLINK/2 sealing (vault_cli/capsule_verify.py,
+# vault_cli/vaultlink_protocol.py, testdata/vaultlink.py). All primitives come
+# from here; nothing is hand-rolled.
+cryptography>=42
