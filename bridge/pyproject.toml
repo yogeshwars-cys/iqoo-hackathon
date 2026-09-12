@@ -10,6 +10,10 @@ requires-python = ">=3.10"
 # requirements.txt and are installed separately.
 dependencies = []
 
+[project.optional-dependencies]
+# Signed-capsule verification and the sealed VaultLink protocol.
+verify = ["cryptography>=42"]
+
 [project.scripts]
 vault-embed = "vault_cli.embed:main"
 vault-query = "vault_cli.query:main"

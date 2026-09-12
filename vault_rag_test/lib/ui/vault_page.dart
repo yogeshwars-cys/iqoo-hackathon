@@ -11,14 +11,16 @@
 
 library;
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
 
+import '../core/gating.dart';
 import '../core/llm/capsule.dart';
+import '../core/security/ephemeral_clipboard.dart';
+import '../core/security/security_constants.dart';
 import '../core/llm/llm_runtime.dart';
 import '../core/vault_engine.dart';
 import '../core/vector_store.dart';
@@ -29,7 +31,15 @@ class VaultPage extends StatefulWidget {
   final VaultEngine engine;
   final LlmRuntime llm;
 
-  const VaultPage({super.key, required this.engine, required this.llm});
+  /// Injectable for widget tests; a platform-backed one is created otherwise.
+  final EphemeralClipboard? clipboard;
+
+  const VaultPage({
+    super.key,
+    required this.engine,
+    required this.llm,
+    this.clipboard,
+  });
 
   @override
   State<VaultPage> createState() => _VaultPageState();
@@ -52,8 +62,25 @@ class _VaultPageState extends State<VaultPage> {
   bool _generate = true;
   bool _showRawJson = false;
 
+  /// Owns the 20-second lifecycle of whatever capsule was last copied.
+  late final EphemeralClipboard _clipboard;
+  AppLifecycleListener? _lifecycle;
+
+  @override
+  void initState() {
+    super.initState();
+    _clipboard = widget.clipboard ?? EphemeralClipboard();
+    // Android only lets the foreground app read the clipboard, so an expiry
+    // that fired while backgrounded is retried when the app comes back.
+    _lifecycle = AppLifecycleListener(
+      onResume: () => unawaited(_clipboard.checkNow()),
+    );
+  }
+
   @override
   void dispose() {
+    _lifecycle?.dispose();
+    _clipboard.dispose();
     _queryController.dispose();
     super.dispose();
   }
@@ -169,32 +196,30 @@ class _VaultPageState extends State<VaultPage> {
     });
   }
 
+  /// Copies the capsule with a 20-second lifetime.
+  ///
+  /// The previous build also wrote the JSON to external storage as an adb
+  /// fallback. That file was decrypted vault content persisted in plaintext
+  /// with no expiry, readable by anything with USB debugging — the exact
+  /// leak the encrypted store exists to prevent — so it is gone.
   Future<void> _copyResults() async {
     final capsule = _capsule;
     if (capsule == null) return;
-    final json = capsule.toPrettyJson();
-    await Clipboard.setData(ClipboardData(text: json));
-
-    // Fallback for when the clipboard does not sync to the laptop:
-    //   adb pull /storage/emulated/0/Android/data/<package>/files/query_result.json
-    String? savedTo;
-    try {
-      final dir = await getExternalStorageDirectory();
-      if (dir != null) {
-        final f = File('${dir.path}/query_result.json');
-        await f.writeAsString(json);
-        savedTo = f.path;
-      }
-    } catch (_) {
-      // Non-fatal — the clipboard copy above already succeeded.
-    }
-
+    await _clipboard.copy(capsule.toPrettyJson());
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(savedTo == null
-          ? 'Copied to clipboard'
-          : 'Copied to clipboard, also written to $savedTo'),
-      duration: const Duration(seconds: 5),
+      content: Row(
+        children: [
+          const Icon(Icons.lock_clock_outlined,
+              size: 18, color: VaultColors.accent),
+          const SizedBox(width: VaultSpace.sm),
+          Expanded(
+            child: Text('Ephemeral buffer active: auto-destructs in '
+                '${kClipboardTtl.inSeconds}s'),
+          ),
+        ],
+      ),
+      duration: const Duration(seconds: 3),
     ));
   }
 
@@ -468,9 +493,149 @@ class _VaultPageState extends State<VaultPage> {
           ),
         ],
       ),
-      child: _showRawJson
-          ? CodeBlock(capsule.toPrettyJson())
-          : _capsuleBody(capsule),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _ephemeralBanner(),
+          _provenanceRow(capsule),
+          const SizedBox(height: VaultSpace.md),
+          _showRawJson
+              ? CodeBlock(capsule.toPrettyJson())
+              : _capsuleBody(capsule),
+        ],
+      ),
+    );
+  }
+
+  /// Live countdown while a copied capsule is still on the clipboard, then a
+  /// one-line outcome. Text carries the state; the bar only reinforces it.
+  Widget _ephemeralBanner() {
+    return ListenableBuilder(
+      listenable: _clipboard,
+      builder: (context, _) {
+        final active = _clipboard.isActive;
+        final outcome = _clipboard.lastOutcome;
+        if (!active && outcome == null) return const SizedBox.shrink();
+
+        final (IconData icon, Color color, String text) = active
+            ? (
+                Icons.lock_clock_outlined,
+                VaultColors.accent,
+                'Ephemeral buffer active: auto-destructs in '
+                    '${_clipboard.secondsRemaining}s',
+              )
+            : switch (outcome!) {
+                ScrubOutcome.cleared => (
+                    Icons.check_circle_outline,
+                    VaultColors.muted,
+                    'Capsule removed from the clipboard.',
+                  ),
+                ScrubOutcome.replaced => (
+                    Icons.info_outline,
+                    VaultColors.muted,
+                    'Clipboard changed since the copy, so it was left untouched.',
+                  ),
+                ScrubOutcome.unreadable => (
+                    Icons.schedule_rounded,
+                    VaultColors.warn,
+                    'Clipboard unreadable in the background; will scrub on '
+                        'return if unchanged.',
+                  ),
+                ScrubOutcome.superseded => (
+                    Icons.info_outline,
+                    VaultColors.muted,
+                    'Superseded by a newer copy.',
+                  ),
+              };
+        final reduceMotion = MediaQuery.of(context).disableAnimations;
+
+        return Semantics(
+          liveRegion: true,
+          label: text,
+          child: ExcludeSemantics(
+            child: Container(
+              margin: const EdgeInsets.only(bottom: VaultSpace.md),
+              padding: const EdgeInsets.all(VaultSpace.md),
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.07),
+                borderRadius: BorderRadius.circular(VaultSpace.radiusSm),
+                border: Border.all(color: color.withValues(alpha: 0.3)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Icon(icon, size: 16, color: color),
+                      const SizedBox(width: VaultSpace.sm),
+                      Expanded(
+                        child: Text(
+                          text,
+                          style: TextStyle(
+                            color: active ? VaultColors.foreground : color,
+                            fontSize: 12,
+                            height: 1.4,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (active) ...[
+                    const SizedBox(height: VaultSpace.sm),
+                    TweenAnimationBuilder<double>(
+                      tween: Tween(end: _clipboard.fractionRemaining),
+                      duration: reduceMotion
+                          ? Duration.zero
+                          : const Duration(milliseconds: 250),
+                      builder: (context, value, _) => LinearProgressIndicator(
+                        value: value,
+                        minHeight: 3,
+                        backgroundColor: VaultColors.surfaceHigh,
+                        color: VaultColors.accent,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// Gate taken and signature state, stated without overclaiming.
+  Widget _provenanceRow(ContextCapsule capsule) {
+    final p = capsule.provenance;
+    final signed = p?.isSigned ?? false;
+    final String signature;
+    if (p == null) {
+      signature = 'Not signed';
+    } else if (signed) {
+      signature = 'Signed · ${p.enclave}';
+    } else if (p.signatureAlgorithm == 'MOCK-UNSIGNED') {
+      signature = 'Mock signature (no keystore)';
+    } else {
+      signature = 'Signing failed · ${p.signatureError ?? "unknown"}';
+    }
+    return Wrap(
+      spacing: VaultSpace.sm,
+      runSpacing: VaultSpace.xs,
+      children: [
+        StatusPill(
+          label: switch (capsule.gatingPath) {
+            GatingPath.extractiveEarlyExit => 'TIER 1 · EARLY EXIT',
+            GatingPath.llmSynthesized => 'TIER 2 · LLM',
+            GatingPath.extractiveFallback => 'TIER 2 · EXTRACTIVE',
+            GatingPath.belowRelevanceThreshold => 'TIER 3 · NO MATCH',
+          },
+          color: VaultColors.info,
+        ),
+        StatusPill(
+          label: signature.toUpperCase(),
+          color: signed ? VaultColors.accent : VaultColors.warn,
+        ),
+      ],
     );
   }
 
@@ -538,7 +703,15 @@ class _VaultPageState extends State<VaultPage> {
         const SizedBox(height: VaultSpace.lg),
         _label('RETRIEVED CONTEXT'),
         const SizedBox(height: VaultSpace.sm),
-        if (capsule.context.isEmpty)
+        if (capsule.context.isEmpty &&
+            capsule.gatingPath == GatingPath.belowRelevanceThreshold)
+          const EmptyState(
+            icon: Icons.search_off_rounded,
+            title: 'Below the relevance threshold',
+            message: 'No chunk scored high enough to quote. Low-scoring text '
+                'is left out of the capsule on purpose.',
+          )
+        else if (capsule.context.isEmpty)
           const EmptyState(
             icon: Icons.inbox_outlined,
             title: 'Nothing indexed yet',

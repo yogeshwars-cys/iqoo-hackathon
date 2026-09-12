@@ -34,6 +34,8 @@ class MainActivity : FlutterActivity() {
     private val channelName = "vault/device"
     private var llmChannel: LlmChannel? = null
     private var llamaChannel: LlamaChannel? = null
+    private var keystoreChannel: KeystoreChannel? = null
+    private var clipboardChannel: SensitiveClipboardChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -45,6 +47,11 @@ class MainActivity : FlutterActivity() {
 
         LlamaChannel.applicationContext = applicationContext
         llamaChannel = LlamaChannel(flutterEngine.dartExecutor.binaryMessenger)
+
+        // AndroidKeyStore: chunk encryption and capsule signing. See
+        // KeystoreChannel.kt for the key specs and the StrongBox/TEE policy.
+        keystoreChannel = KeystoreChannel(flutterEngine.dartExecutor.binaryMessenger, applicationContext)
+        clipboardChannel = SensitiveClipboardChannel(flutterEngine.dartExecutor.binaryMessenger, applicationContext)
 
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -65,6 +72,10 @@ class MainActivity : FlutterActivity() {
         llmChannel = null
         llamaChannel?.dispose()
         llamaChannel = null
+        keystoreChannel?.dispose()
+        keystoreChannel = null
+        clipboardChannel?.dispose()
+        clipboardChannel = null
         super.onDestroy()
     }
 

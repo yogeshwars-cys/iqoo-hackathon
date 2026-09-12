@@ -43,7 +43,11 @@
 library;
 
 import 'dart:convert';
+import 'dart:typed_data';
 
+import '../gating.dart';
+import '../security/capsule_signing.dart';
+import '../security/security_constants.dart';
 import '../vault_engine.dart';
 import '../vector_store.dart';
 
@@ -129,8 +133,70 @@ class CapsuleGeneration {
       };
 }
 
+/// Who produced a capsule and the evidence for it: the canonical digest,
+/// the ECDSA signature and the device public key. See capsule_signing.dart
+/// for the exact bytes signed, and capsule_signer.dart for how this is
+/// filled in.
+class CapsuleProvenance {
+  /// What the platform reports (Build.MANUFACTURER/MODEL/SOC_MODEL) — never
+  /// a marketing name typed into the source.
+  final String device;
+
+  /// e.g. "AndroidKeyStore (StrongBox)", "AndroidKeyStore (TEE)".
+  final String enclave;
+  final String keySecurityLevel;
+  final bool strongBoxFeature;
+  final String gatingPath;
+  final int timestamp;
+  final String canonicalVersion;
+  final String canonicalDigest;
+
+  /// Lowercase hex DER, `MOCK_SIG_…` from the host test double, or null when
+  /// signing failed (see [signatureError]).
+  final String? signature;
+  final String signatureAlgorithm;
+
+  /// Lowercase hex X.509 SubjectPublicKeyInfo DER. Informational: a verifier
+  /// must compare it with a key it pinned earlier, never trust it on sight.
+  final String? publicKey;
+  final String? signatureError;
+
+  const CapsuleProvenance({
+    required this.device,
+    required this.enclave,
+    required this.keySecurityLevel,
+    required this.strongBoxFeature,
+    required this.gatingPath,
+    required this.timestamp,
+    required this.canonicalVersion,
+    required this.canonicalDigest,
+    required this.signature,
+    required this.signatureAlgorithm,
+    required this.publicKey,
+    this.signatureError,
+  });
+
+  bool get isSigned =>
+      signature != null && signatureAlgorithm == 'ECDSA-P256-SHA256';
+
+  Map<String, dynamic> toJson() => {
+        'device': device,
+        'enclave': enclave,
+        'key_security_level': keySecurityLevel,
+        'strongbox_feature': strongBoxFeature,
+        'gating_path': gatingPath,
+        'timestamp': timestamp,
+        'canonical_version': canonicalVersion,
+        'canonical_digest': canonicalDigest,
+        'signature': signature,
+        'signature_algorithm': signatureAlgorithm,
+        'public_key': publicKey,
+        if (signatureError != null) 'signature_error': signatureError,
+      };
+}
+
 class ContextCapsule {
-  static const schemaVersion = '1.0';
+  static const schemaVersion = '1.1';
 
   final String query;
   final String answer;
@@ -156,6 +222,19 @@ class ContextCapsule {
   final CapsuleGeneration generation;
   final Map<String, dynamic> retrieval;
 
+  /// Which gate produced this capsule. See gating.dart.
+  final GatingPath gatingPath;
+
+  /// Unix epoch milliseconds, fixed when the capsule is built and signed
+  /// verbatim.
+  final int timestamp;
+
+  /// Unsigned telemetry about the gate: top score and thresholds.
+  final Map<String, dynamic> gating;
+
+  /// Null until [CapsuleSigner] has run.
+  final CapsuleProvenance? provenance;
+
   const ContextCapsule({
     required this.query,
     required this.answer,
@@ -168,7 +247,50 @@ class ContextCapsule {
     required this.extractedFrom,
     required this.generation,
     required this.retrieval,
+    required this.gatingPath,
+    required this.timestamp,
+    this.gating = const {},
+    this.provenance,
   });
+
+  ContextCapsule withProvenance(CapsuleProvenance provenance) => ContextCapsule(
+        query: query,
+        answer: answer,
+        confidence: confidence,
+        keyFacts: keyFacts,
+        caveats: caveats,
+        sources: sources,
+        context: context,
+        extractedAnswer: extractedAnswer,
+        extractedFrom: extractedFrom,
+        generation: generation,
+        retrieval: retrieval,
+        gatingPath: gatingPath,
+        timestamp: timestamp,
+        gating: gating,
+        provenance: provenance,
+      );
+
+  /// The signed view of this capsule. Every field here is read back from
+  /// [toJson] output by the desktop verifier, so the two must stay in step.
+  CanonicalCapsule canonical({
+    required String device,
+    required String keySecurityLevel,
+    required Uint8List? publicKeyDer,
+  }) =>
+      CanonicalCapsule(
+        query: query,
+        answer: answer,
+        timestamp: timestamp,
+        gatingPath: gatingPath.wireName,
+        chunkIds: [for (final c in context) c.id],
+        confidence: confidence.name,
+        keyFactTexts: [for (final f in keyFacts) f.fact],
+        contextContents: [for (final c in context) c.content],
+        device: device,
+        keySecurityLevel: keySecurityLevel,
+        publicKeyDer: publicKeyDer,
+      );
 
   Map<String, dynamic> toJson() => {
         'capsule_version': schemaVersion,
@@ -180,6 +302,7 @@ class ContextCapsule {
         'sources': sources.map((s) => s.toJson()).toList(),
         'context': context
             .map((c) => {
+                  'id': c.id,
                   'file': c.fileName,
                   'similarity': double.parse(c.score.toStringAsFixed(4)),
                   'content': c.content,
@@ -189,6 +312,12 @@ class ContextCapsule {
         'extracted_from': extractedFrom,
         'generation': generation.toJson(),
         'retrieval': retrieval,
+        'gating': {
+          'path': gatingPath.wireName,
+          'tier': gatingPath.tier,
+          ...gating,
+        },
+        if (provenance != null) 'provenance': provenance!.toJson(),
       };
 
   String toPrettyJson() =>
@@ -204,12 +333,17 @@ class ContextCapsule {
     SearchResult result, {
     String? parseError,
     CapsuleGeneration? generation,
+    GatingPath gatingPath = GatingPath.extractiveFallback,
+    int? timestamp,
+    Map<String, dynamic> gating = const {},
   }) {
     final extracted = result.directAnswer;
+    final modelRan = generation?.ran ?? parseError != null;
     return ContextCapsule(
-      query: result.query,
-      answer: extracted?.text ??
-          'No line in the retrieved context answers this directly.',
+      query: result.query.trim(),
+      answer: (extracted?.text ??
+              'No line in the retrieved context answers this directly.')
+          .trim(),
       confidence: extracted == null
           ? CapsuleConfidence.none
           : (extracted.lineScore > 0.6
@@ -225,11 +359,15 @@ class ContextCapsule {
           ),
       ],
       caveats: [
-        if (generation?.ran ?? false)
+        if (modelRan)
           'The language model ran but its output could not be parsed; this '
               'capsule was rebuilt from retrieval alone.'
+        else if (gatingPath == GatingPath.extractiveEarlyExit)
+          'Retrieval similarity cleared the early-exit threshold, so the '
+              'language model was not run. The answer is a line quoted '
+              'verbatim from the corpus.'
         else
-          'Generated with retrieval only — no language model was loaded. '
+          'Generated with retrieval only — no language model was used. '
               'The answer is a line quoted verbatim from the corpus.',
       ],
       sources: result.chunks
@@ -245,8 +383,45 @@ class ContextCapsule {
               ? CapsuleGeneration.notRun
               : CapsuleGeneration(ran: true, parseError: parseError)),
       retrieval: _retrievalBlock(result),
+      gatingPath: gatingPath,
+      timestamp: timestamp ?? DateTime.now().millisecondsSinceEpoch,
+      gating: gating,
     );
   }
+
+  /// Tier 3: nothing retrieved cleared the relevance floor.
+  ///
+  /// Deterministic by construction — fixed answer, no facts, no context.
+  /// The low-scoring chunks are deliberately NOT shipped: they are not
+  /// evidence for anything, and a capsule that leaves the device over the
+  /// clipboard should carry no document text it does not need. File names
+  /// and scores stay in `sources` so the miss is still diagnosable.
+  factory ContextCapsule.belowRelevanceThreshold(
+    SearchResult result, {
+    int? timestamp,
+    Map<String, dynamic> gating = const {},
+  }) =>
+      ContextCapsule(
+        query: result.query.trim(),
+        answer: kNoRelevantFactsAnswer,
+        confidence: CapsuleConfidence.none,
+        keyFacts: const [],
+        caveats: const [
+          'No retrieved chunk cleared the relevance threshold; the language '
+              'model was not run.',
+        ],
+        sources: result.chunks
+            .map((c) => CapsuleSource(c.fileName, c.score))
+            .toList(),
+        context: const [],
+        extractedAnswer: null,
+        extractedFrom: null,
+        generation: CapsuleGeneration.notRun,
+        retrieval: _retrievalBlock(result),
+        gatingPath: GatingPath.belowRelevanceThreshold,
+        timestamp: timestamp ?? DateTime.now().millisecondsSinceEpoch,
+        gating: gating,
+      );
 
   /// Builds a capsule from the model's raw output, falling back cleanly.
   factory ContextCapsule.fromModelOutput(
@@ -256,6 +431,8 @@ class ContextCapsule {
     required String backend,
     required int elapsedMs,
     int? tokens,
+    int? timestamp,
+    Map<String, dynamic> gating = const {},
   }) {
     final parsed = _extractJsonObject(rawOutput);
     if (parsed == null) {
@@ -270,6 +447,8 @@ class ContextCapsule {
           parseError: 'No recoverable JSON object in ${rawOutput.length} '
               'characters of output.',
         ),
+        timestamp: timestamp,
+        gating: gating,
       );
     }
 
@@ -290,6 +469,8 @@ class ContextCapsule {
           elapsedMs: elapsedMs,
           parseError: 'Parsed JSON contained no "answer" field.',
         ),
+        timestamp: timestamp,
+        gating: gating,
       );
     }
 
@@ -299,7 +480,7 @@ class ContextCapsule {
         .toList();
 
     return ContextCapsule(
-      query: result.query,
+      query: result.query.trim(),
       answer: answer,
       confidence: _confidenceFrom(parsed['confidence']),
       keyFacts: facts,
@@ -320,6 +501,9 @@ class ContextCapsule {
         elapsedMs: elapsedMs,
       ),
       retrieval: _retrievalBlock(result),
+      gatingPath: GatingPath.llmSynthesized,
+      timestamp: timestamp ?? DateTime.now().millisecondsSinceEpoch,
+      gating: gating,
     );
   }
 
