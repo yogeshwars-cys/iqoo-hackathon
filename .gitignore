@@ -1,8 +1,11 @@
 # ---------------------------------------------------------------- toolchains
 node_modules/
 .venv/
+venv/
 __pycache__/
 *.pyc
+# `pip install -e bridge/` drops this next to the package.
+*.egg-info/
 
 # ------------------------------------------------------------- build output
 build/

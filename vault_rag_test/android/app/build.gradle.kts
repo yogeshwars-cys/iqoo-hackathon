@@ -37,8 +37,29 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+
+            // MediaPipe's AAR references AutoValue and protobuf marker types
+            // that exist only at compile time, which fails R8 with "Missing
+            // class" errors, and it resolves classes reflectively from JNI,
+            // which R8 cannot see and therefore strips. proguard-rules.pro
+            // explains both in detail.
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
+}
+
+dependencies {
+    // MediaPipe LLM Inference - the Gemma runtime. Brings its own prebuilt
+    // native libraries for every ABI, which is most of why the APK is large.
+    //
+    // Pinned rather than floating: this artifact has changed its Kotlin API
+    // between minor versions (setPreferredBackend was setUseGpu not long
+    // ago), and a silent bump would break the build at a point far from the
+    // change.
+    implementation("com.google.mediapipe:tasks-genai:0.10.24")
 }
 
 kotlin {

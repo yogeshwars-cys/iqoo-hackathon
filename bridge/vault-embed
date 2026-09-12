@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+# POSIX shim. See vault-embed.cmd for the Windows equivalent.
+exec python3 -m vault_cli.embed "$@"

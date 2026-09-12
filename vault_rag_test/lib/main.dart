@@ -1,366 +1,368 @@
 /// main.dart
 ///
-/// Single-screen test harness:
-///   [Upload files]  ->  [Convert to Vector DB]  ->  [query field + Search]
-///   -> results list -> [Copy results as JSON]
+/// Composition root for the iQOO co-processor vault.
 ///
-/// This is the whole "app" for the v0 test build. No navigation, no
-/// theming beyond a seed color — the point is to prove the pipeline works,
-/// not to look finished. See implementation.md for what's deliberately
-/// left out (encryption at rest, on-device generation, Office Kit).
+/// WHAT CHANGED FROM THE PREVIOUS BUILD, AND WHY
+///
+/// v0 was a single screen whose State object *was* the application: it held
+/// the interpreter, the chunker, the database handle and the UI, and every
+/// step of the pipeline was a method on a widget. That is the right shape
+/// for a test harness with one caller.
+///
+/// It stops being the right shape the moment a second caller exists. The
+/// desktop bridge has to ingest and query with no widget mounted, possibly
+/// while the user is on another tab, and possibly at the same time as a
+/// local search — and a TFLite interpreter is not reentrant, so "at the
+/// same time" is a native crash rather than a race you can debug.
+///
+/// So the pipeline moved into [VaultEngine], which serialises every call
+/// that touches the interpreter, and this file became what wires the four
+/// long-lived objects together and hands them to three screens:
+///
+///   VaultEngine       the encoder, the chunker, the vector store
+///   LlmRuntime        Gemma, for reasoning - optional, loaded on demand
+///   ComputeTelemetry  1 Hz sysfs sampling for the charts
+///   BenchmarkRunner   repeatable load, driven by the engine
+///   BridgeClient      the outbound WebSocket to bridge_server.py
+///
+/// The two models divide the work strictly: MiniLM encodes (every ingest,
+/// every query, always loaded, ~230 ms) and Gemma reasons over what
+/// retrieval already found (once per query, only when loaded, seconds). The
+/// engine works with the second one absent, which is why [LlmRuntime] is
+/// attached to it rather than owned by it.
+///
+/// They are constructed here and only here. Nothing in ui/ owns state that
+/// outlives its screen, which is what makes it safe for the bridge to keep
+/// working while the user is looking at the benchmark.
 
 library;
 
-import 'dart:convert';
-import 'dart:io';
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 
-import 'chunking.dart';
-import 'embedding_service.dart';
-import 'vector_store.dart';
+import 'bridge/bridge_client.dart';
+import 'core/llm/llm_runtime.dart';
+import 'core/llm/model_settings.dart';
+import 'core/vault_engine.dart';
+import 'telemetry/benchmark_runner.dart';
+import 'telemetry/compute_telemetry.dart';
+import 'ui/bridge_page.dart';
+import 'ui/model_page.dart';
+import 'ui/stats_page.dart';
+import 'ui/theme.dart';
+import 'ui/vault_page.dart';
+import 'ui/widgets/common.dart';
 
-/// Extensions we are willing to read. Enforced here rather than in the
-/// picker: Android's document picker filters by MIME type, and source-code
-/// extensions like .dart or .kt have no registered MIME type, so a
-/// `FileType.custom` filter greys out exactly the files this test needs.
-/// Pick anything, then reject in Dart where we can be precise.
-const _allowedExtensions = {
-  'txt', 'md', 'dart', 'py', 'js', 'ts', 'json', 'yaml', 'yml',
-  'java', 'kt', 'c', 'h', 'cpp', 'rs', 'go', 'sh', 'csv', 'html', 'css',
-};
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+    statusBarColor: Colors.transparent,
+    statusBarIconBrightness: Brightness.light,
+    systemNavigationBarColor: VaultColors.surface,
+    systemNavigationBarIconBrightness: Brightness.light,
+  ));
+  runApp(const CoProcessorApp());
+}
 
-void main() => runApp(const VaultTestApp());
-
-class VaultTestApp extends StatelessWidget {
-  const VaultTestApp({super.key});
+class CoProcessorApp extends StatelessWidget {
+  const CoProcessorApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Vault RAG test',
-      theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.teal),
-      home: const VaultHomePage(),
+      title: 'iQOO Vault Co-Processor',
+      debugShowCheckedModeBanner: false,
+      theme: buildVaultTheme(),
+      home: const AppShell(),
     );
   }
 }
 
-class VaultHomePage extends StatefulWidget {
-  const VaultHomePage({super.key});
+class AppShell extends StatefulWidget {
+  const AppShell({super.key});
 
   @override
-  State<VaultHomePage> createState() => _VaultHomePageState();
+  State<AppShell> createState() => _AppShellState();
 }
 
-class _VaultHomePageState extends State<VaultHomePage> {
-  final MiniLMEmbeddingService _embeddingService = MiniLMEmbeddingService();
-  final Chunker _chunker = Chunker();
-  VectorStore? _store;
+class _AppShellState extends State<AppShell> {
+  final _meter = InferenceMeter();
 
-  bool _modelReady = false;
-  bool _busy = false;
-  String _status = 'Loading embedding model...';
-  String _progress = '';
+  late final VaultEngine _engine;
+  late final LlmRuntime _llm;
+  late final ComputeTelemetry _telemetry;
+  late final BenchmarkRunner _benchmark;
+  late final BridgeClient _bridge;
+  AppLifecycleListener? _lifecycle;
 
-  List<PlatformFile> _pickedFiles = [];
-  final Map<String, String> _ingestStatus = {};
-
-  final TextEditingController _queryController = TextEditingController();
-  List<RetrievedChunk> _results = [];
-  String _searchInfo = '';
+  int _tab = 0;
+  bool _bootstrapped = false;
+  String? _bootstrapError;
+  String _vocabText = '';
+  String _documentsPath = '';
+  ModelSettings _modelSettings = ModelSettings.empty;
 
   @override
   void initState() {
     super.initState();
-    _init();
+
+    _engine = VaultEngine();
+    // The engine reports native inference time to the meter, which the
+    // telemetry service turns into the "inference duty" lane. A callback
+    // rather than an import, so core/ has no dependency on telemetry/.
+    _engine.embeddings.onInference = _meter.record;
+
+    _llm = LlmRuntime();
+    // Generation feeds the same duty-cycle lane as embedding, so a capsule
+    // being written shows up on the chart as the multi-second block of work
+    // it actually is.
+    _llm.onGeneration = _meter.record;
+    _engine.llm = _llm;
+
+    _telemetry = ComputeTelemetry(meter: _meter);
+    _benchmark = BenchmarkRunner(
+      engine: _engine,
+      telemetrySnapshot: _telemetry.snapshot,
+    );
+    _bridge = BridgeClient(
+      engine: _engine,
+      telemetrySnapshot: _telemetry.snapshot,
+    );
+
+    // Stop sampling in the background. A 1 Hz timer reading eight sysfs
+    // files is not free, and samples taken while the app is not foreground
+    // would pollute the chart with a flat stretch that looks like idle
+    // hardware rather than a paused recorder.
+    _lifecycle = AppLifecycleListener(
+      onPause: _telemetry.stop,
+      onResume: _telemetry.start,
+    );
+
+    _bootstrap();
+  }
+
+  Future<void> _bootstrap() async {
+    try {
+      _vocabText = await rootBundle.loadString('assets/models/vocab.txt');
+      final dir = await getApplicationDocumentsDirectory();
+      _documentsPath = dir.path;
+
+      await _engine.initialize(
+        vocabText: _vocabText,
+        databasePath: '${dir.path}/vault.db',
+      );
+
+      _modelSettings = await ModelSettings.load(dir.path);
+      _telemetry.start();
+
+      // Deliberately not auto-loading Gemma unless asked. A cold start that
+      // spends 30 s on weights most sessions never use is the wrong default;
+      // retrieval is the fast path and stays fast.
+      final remembered = _modelSettings.modelPath;
+      if (_modelSettings.autoLoad && remembered != null) {
+        unawaited(_llm.load(remembered));
+      }
+      if (!mounted) return;
+      setState(() => _bootstrapped = true);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _bootstrapped = true;
+        _bootstrapError = '$e';
+      });
+    }
   }
 
   @override
   void dispose() {
-    _queryController.dispose();
-    _store?.close();
-    _embeddingService.close();
+    _lifecycle?.dispose();
+    _bridge.dispose();
+    _llm.dispose();
+    _telemetry.dispose();
+    _benchmark.dispose();
+    _engine.dispose();
     super.dispose();
-  }
-
-  Future<void> _init() async {
-    try {
-      final vocabText = await rootBundle.loadString('assets/models/vocab.txt');
-      final sw = Stopwatch()..start();
-      await _embeddingService.load(vocabText: vocabText);
-      sw.stop();
-
-      final dir = await getApplicationDocumentsDirectory();
-      _store = VectorStore.open('${dir.path}/vault.db');
-
-      if (!mounted) return;
-      setState(() {
-        _modelReady = true;
-        _status = 'Model ready — ${_embeddingService.backend}, '
-            '${_embeddingService.embeddingDim}-dim, '
-            '${_embeddingService.sequenceLength} tokens, '
-            '${sw.elapsedMilliseconds} ms to load. '
-            'Vault has ${_store!.count} chunks.\n'
-            'Backends: ${_embeddingService.backendReport}';
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _status = 'Failed to load model: $e');
-    }
-  }
-
-  Future<void> _pickFiles() async {
-    // file_picker 12 dropped FilePickerResult: pickFiles is static and
-    // returns the list directly, empty when the user cancels.
-    final files = await FilePicker.pickFiles();
-    if (files.isEmpty || !mounted) return;
-    setState(() {
-      _pickedFiles = files;
-      _ingestStatus.clear();
-    });
-  }
-
-  Future<void> _convertToVectorDb() async {
-    final store = _store;
-    if (store == null || _pickedFiles.isEmpty) return;
-
-    setState(() {
-      _busy = true;
-      _status = 'Converting...';
-      _progress = '';
-    });
-
-    final sw = Stopwatch()..start();
-    var totalChunks = 0;
-    var fileNo = 0;
-
-    for (final file in _pickedFiles) {
-      fileNo++;
-      final path = file.path;
-      final ext = (file.extension ?? '').toLowerCase();
-
-      if (path == null) {
-        setState(() => _ingestStatus[file.name] = 'Skipped — unreadable');
-        continue;
-      }
-      if (!_allowedExtensions.contains(ext)) {
-        setState(() => _ingestStatus[file.name] = 'Skipped — .$ext not allowed');
-        continue;
-      }
-
-      try {
-        final content = await File(path).readAsString();
-        final chunks = _chunker.chunk(file.name, content);
-        for (var i = 0; i < chunks.length; i++) {
-          final embedding = await _embeddingService.embed(chunks[i].content);
-          store.insert(chunks[i], embedding);
-          totalChunks++;
-          // Inference is synchronous; yield so the progress line actually
-          // repaints instead of the app looking frozen for a whole file.
-          setState(() => _progress =
-              'File $fileNo/${_pickedFiles.length}: ${file.name} — '
-              'chunk ${i + 1}/${chunks.length}');
-          await Future<void>.delayed(Duration.zero);
-        }
-        setState(() {
-          _ingestStatus[file.name] = 'Ingested (${chunks.length} chunks)';
-        });
-      } catch (e) {
-        setState(() {
-          _ingestStatus[file.name] = 'Skipped — unsupported or unreadable';
-        });
-      }
-    }
-
-    sw.stop();
-    final perChunk = totalChunks == 0
-        ? '—'
-        : '${(sw.elapsedMilliseconds / totalChunks).toStringAsFixed(0)} ms/chunk';
-    if (!mounted) return;
-    setState(() {
-      _busy = false;
-      _progress = '';
-      _status = 'Vault has ${store.count} chunks total. '
-          'Embedded $totalChunks in ${sw.elapsedMilliseconds} ms ($perChunk, '
-          '${_embeddingService.backend}).';
-    });
-  }
-
-  Future<void> _clearVault() async {
-    final store = _store;
-    if (store == null) return;
-    store.clear();
-    if (!mounted) return;
-    setState(() {
-      _results = [];
-      _searchInfo = '';
-      _ingestStatus.clear();
-      _status = 'Vault cleared. 0 chunks.';
-    });
-  }
-
-  Future<void> _search() async {
-    final store = _store;
-    if (store == null || _queryController.text.trim().isEmpty) return;
-
-    setState(() => _busy = true);
-    try {
-      final sw = Stopwatch()..start();
-      final queryEmbedding =
-          await _embeddingService.embed(_queryController.text);
-      final results = store.topK(queryEmbedding, k: 5);
-      sw.stop();
-      if (!mounted) return;
-      final modelMs = _embeddingService.lastInferenceMicros / 1000;
-      setState(() {
-        _results = results;
-        _searchInfo = results.isEmpty
-            ? 'No chunks in the vault yet.'
-            : 'Searched ${store.count} chunks in ${sw.elapsedMilliseconds} ms '
-                '(model ${modelMs.toStringAsFixed(0)} ms).';
-        _busy = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _busy = false;
-        _searchInfo = 'Search failed: $e';
-      });
-    }
-  }
-
-  Future<void> _copyResultsAsJson() async {
-    final payload = {
-      'query': _queryController.text,
-      'timestamp': DateTime.now().millisecondsSinceEpoch,
-      'top_k': _results.map((r) => r.toJson()).toList(),
-    };
-    final jsonStr = const JsonEncoder.withIndent('  ').convert(payload);
-
-    await Clipboard.setData(ClipboardData(text: jsonStr));
-
-    // Fallback bridge for when clipboard doesn't sync to the laptop:
-    //   adb pull /storage/emulated/0/Android/data/<package>/files/query_result.json
-    String? savedTo;
-    try {
-      final dir = await getExternalStorageDirectory();
-      if (dir != null) {
-        final f = File('${dir.path}/query_result.json');
-        await f.writeAsString(jsonStr);
-        savedTo = f.path;
-      }
-    } catch (_) {
-      // Non-fatal — clipboard copy above already succeeded.
-    }
-
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(savedTo == null
-            ? 'Copied to clipboard (file write unavailable)'
-            : 'Copied to clipboard, also saved to $savedTo'),
-        duration: const Duration(seconds: 6),
-      ),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final canIngest = _modelReady && !_busy && _pickedFiles.isNotEmpty;
+    if (!_bootstrapped) return const _BootScreen();
+    if (_bootstrapError != null || _engine.state == EngineState.failed) {
+      return _FailureScreen(
+        message: _bootstrapError ?? '${_engine.error}',
+        onRetry: () {
+          setState(() {
+            _bootstrapped = false;
+            _bootstrapError = null;
+          });
+          _bootstrap();
+        },
+      );
+    }
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Vault RAG test')),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+      appBar: AppBar(
+        title: const Text('Vault Co-Processor'),
+        actions: [
+          // Link state is visible from every screen, not just the bridge
+          // tab — it is the one piece of status that changes what the app
+          // is doing while you are looking somewhere else.
+          ListenableBuilder(
+            listenable: _bridge,
+            builder: (context, _) => Padding(
+              padding: const EdgeInsets.only(right: VaultSpace.lg),
+              child: StatusPill(
+                label: _bridge.isConnected ? 'LINKED' : 'LOCAL',
+                color: _bridge.isConnected
+                    ? VaultColors.accent
+                    : VaultColors.faint,
+                pulsing: _bridge.isConnected,
+              ),
+            ),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        top: false,
+        child: IndexedStack(
+          index: _tab,
           children: [
-            Text(_status, style: Theme.of(context).textTheme.bodyMedium),
-            if (_progress.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              const LinearProgressIndicator(),
-              const SizedBox(height: 4),
-              Text(_progress, style: Theme.of(context).textTheme.bodySmall),
-            ],
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: _modelReady && !_busy ? _pickFiles : null,
-                    icon: const Icon(Icons.upload_file),
-                    label: const Text('Upload files'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                IconButton(
-                  tooltip: 'Clear vault',
-                  onPressed: _modelReady && !_busy ? _clearVault : null,
-                  icon: const Icon(Icons.delete_outline),
-                ),
-              ],
+            VaultPage(engine: _engine, llm: _llm),
+            ModelPage(
+              llm: _llm,
+              rememberedPath: _modelSettings.modelPath,
+              onRemember: (path) async {
+                _modelSettings = _modelSettings.copyWith(modelPath: path);
+                await _modelSettings.save(_documentsPath);
+              },
             ),
-            const SizedBox(height: 12),
-            ElevatedButton.icon(
-              onPressed: canIngest ? _convertToVectorDb : null,
-              icon: const Icon(Icons.storage),
-              label: const Text('Convert to Vector DB'),
+            BridgePage(client: _bridge, documentsPath: _documentsPath),
+            StatsPage(
+              telemetry: _telemetry,
+              benchmark: _benchmark,
+              engine: _engine,
+              vocabText: _vocabText,
             ),
-            if (_pickedFiles.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              ..._pickedFiles.map(
-                (f) => Text(
-                  '${f.name}: ${_ingestStatus[f.name] ?? 'Pending'}',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ),
-            ],
-            const Divider(height: 32),
-            TextField(
-              controller: _queryController,
-              onSubmitted: (_) => _modelReady && !_busy ? _search() : null,
-              decoration: const InputDecoration(
-                labelText: 'Test query',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 8),
-            ElevatedButton.icon(
-              onPressed: _modelReady && !_busy ? _search : null,
-              icon: const Icon(Icons.search),
-              label: const Text('Search'),
-            ),
-            if (_searchInfo.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Text(_searchInfo, style: Theme.of(context).textTheme.bodySmall),
-            ],
-            const SizedBox(height: 8),
-            Expanded(
-              child: ListView.builder(
-                itemCount: _results.length,
-                itemBuilder: (context, i) {
-                  final r = _results[i];
-                  final preview = r.content.length > 200
-                      ? '${r.content.substring(0, 200)}...'
-                      : r.content;
-                  return Card(
-                    child: ListTile(
-                      title:
-                          Text('${r.fileName}  (${r.score.toStringAsFixed(3)})'),
-                      subtitle: Text(preview),
-                    ),
-                  );
-                },
-              ),
-            ),
-            if (_results.isNotEmpty)
-              ElevatedButton.icon(
-                onPressed: _copyResultsAsJson,
-                icon: const Icon(Icons.copy),
-                label: const Text('Copy results as JSON'),
-              ),
           ],
+        ),
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _tab,
+        onDestinationSelected: (i) => setState(() => _tab = i),
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.folder_outlined),
+            selectedIcon: Icon(Icons.folder_rounded),
+            label: 'Vault',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.memory_outlined),
+            selectedIcon: Icon(Icons.memory_rounded),
+            label: 'Model',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.hub_outlined),
+            selectedIcon: Icon(Icons.hub_rounded),
+            label: 'Bridge',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.insights_outlined),
+            selectedIcon: Icon(Icons.insights_rounded),
+            label: 'Stats',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Model load takes about half a second and is the only unavoidable wait.
+/// It says what it is doing, because a blank screen with a spinner on a
+/// cold start reads as a hang.
+class _BootScreen extends StatelessWidget {
+  const _BootScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 26,
+              height: 26,
+              child: CircularProgressIndicator(
+                strokeWidth: 2.5,
+                color: VaultColors.accent,
+              ),
+            ),
+            SizedBox(height: VaultSpace.lg),
+            Text(
+              'Loading the encoder',
+              style: TextStyle(
+                color: VaultColors.foreground,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            SizedBox(height: VaultSpace.xs),
+            Text(
+              'Selecting the fastest available delegate',
+              style: TextStyle(color: VaultColors.faint, fontSize: 12),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FailureScreen extends StatelessWidget {
+  final String message;
+  final VoidCallback onRetry;
+
+  const _FailureScreen({required this.message, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(VaultSpace.xl),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Icon(Icons.error_outline,
+                  color: VaultColors.danger, size: 34),
+              const SizedBox(height: VaultSpace.lg),
+              const Text(
+                'The encoder did not load',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: VaultColors.foreground,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: VaultSpace.md),
+              // The full error, verbatim. Every realistic cause here is a
+              // build or export problem (missing asset, wrong input dtype,
+              // no working delegate) and the exact text is what identifies
+              // which — a friendly paraphrase would throw that away.
+              CodeBlock(message),
+              const SizedBox(height: VaultSpace.lg),
+              FilledButton.icon(
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh_rounded, size: 19),
+                label: const Text('Retry'),
+              ),
+            ],
+          ),
         ),
       ),
     );

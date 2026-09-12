@@ -14,8 +14,8 @@ library;
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:vault_rag_test/chunking.dart';
-import 'package:vault_rag_test/tokenizer.dart';
+import 'package:vault_rag_test/core/chunking.dart';
+import 'package:vault_rag_test/core/tokenizer.dart';
 
 void main() {
   group('Chunker', () {
