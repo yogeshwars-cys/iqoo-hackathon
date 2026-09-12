@@ -33,6 +33,7 @@ class MainActivity : FlutterActivity() {
 
     private val channelName = "vault/device"
     private var llmChannel: LlmChannel? = null
+    private var llamaChannel: LlamaChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -41,6 +42,9 @@ class MainActivity : FlutterActivity() {
         // application context is process-scoped, so this leaks nothing.
         LlmChannel.applicationContext = applicationContext
         llmChannel = LlmChannel(flutterEngine.dartExecutor.binaryMessenger)
+
+        LlamaChannel.applicationContext = applicationContext
+        llamaChannel = LlamaChannel(flutterEngine.dartExecutor.binaryMessenger)
 
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -59,6 +63,8 @@ class MainActivity : FlutterActivity() {
         // second copy of a 1.3 GB model alongside the first.
         llmChannel?.dispose()
         llmChannel = null
+        llamaChannel?.dispose()
+        llamaChannel = null
         super.onDestroy()
     }
 

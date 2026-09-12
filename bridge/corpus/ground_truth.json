@@ -1,0 +1,204 @@
+{
+  "version": 1,
+  "description": "Ground-truth question set for the four-document demo corpus in bridge/corpus/. Every question names which document(s) the answer must come from, so a scoring run can tell 'retrieved the wrong document but the model covered anyway' apart from a genuine miss. Categories exist to stop a single easy majority (single-fact lookups) from flattering an aggregate score — see README.md in this directory for how to read a run.",
+  "documents": [
+    "vault_test_suite.md",
+    "platform_reliability_runbook.md",
+    "mobile_release_policy.md",
+    "device_data_handling_policy.md"
+  ],
+  "categories": {
+    "single_fact": "One number or fact, stated once, in one document.",
+    "multi_fact": "Requires combining two or more facts from the same document.",
+    "cross_document_distractor": "Shares vocabulary with a document that is NOT the correct source — tests whether retrieval and generation both resist the lexical decoy.",
+    "unanswerable": "Not covered by any document in this corpus. The only correct answer is a refusal (confidence: none) — an invented answer is a failure regardless of how plausible it sounds.",
+    "cross_document_synthesis": "The full answer genuinely requires facts from two different documents."
+  },
+  "questions": [
+    {
+      "id": "q01",
+      "category": "single_fact",
+      "question": "What is the maximum notional value allowed for a single order?",
+      "source_documents": ["vault_test_suite.md"],
+      "expected_answer": "15,000,000.00 USD",
+      "expected_key_facts": ["MAX_NOTIONAL_PER_ORDER_USD = 15_000_000.00"]
+    },
+    {
+      "id": "q02",
+      "category": "single_fact",
+      "question": "How many years of ledger data must be retained?",
+      "source_documents": ["vault_test_suite.md"],
+      "expected_answer": "7 years",
+      "expected_key_facts": ["LEDGER_RETENTION_YEARS = 7"]
+    },
+    {
+      "id": "q03",
+      "category": "multi_fact",
+      "question": "Who is authorized to re-arm the trading kill switch after it engages, and what does that require?",
+      "source_documents": ["vault_test_suite.md"],
+      "expected_answer": "Cryptographic authorization from two independent operators; a single desk head cannot do it alone.",
+      "expected_key_facts": [
+        "Re-arming the kill switch requires cryptographic authorization from two independent operators.",
+        "A single desk head cannot reset the system alone."
+      ]
+    },
+    {
+      "id": "q04",
+      "category": "cross_document_distractor",
+      "question": "What crash-rate threshold triggers an automatic kill switch and rollback?",
+      "source_documents": ["mobile_release_policy.md"],
+      "distractor_documents": ["vault_test_suite.md", "platform_reliability_runbook.md"],
+      "expected_answer": "Crash-free session rate below 99.5% over any rolling 4-hour window, or any single crash signature above 0.3% of sessions.",
+      "expected_key_facts": [
+        "Crash-free session rate drops below 99.5% for the canary cohort over any rolling 4-hour window.",
+        "Any single crash signature accounts for more than 0.3% of all sessions on the build."
+      ],
+      "notes": "Three documents each describe their own 'automatic kill switch' with different trigger conditions (trading drawdown, deploy error rate, crash rate). This question's vocabulary ('kill switch', 'automatic') matches all three; only mobile_release_policy.md's numbers answer it."
+    },
+    {
+      "id": "q05",
+      "category": "cross_document_distractor",
+      "question": "How many rejected requests in how many seconds triggers an automated response?",
+      "source_documents": ["vault_test_suite.md"],
+      "distractor_documents": ["platform_reliability_runbook.md"],
+      "expected_answer": "More than 40 rejected orders inside 60 seconds.",
+      "expected_key_facts": ["More than 40 rejected orders occur inside 60 seconds."],
+      "notes": "platform_reliability_runbook.md has a similarly-shaped trigger ('25 pod crash-loops... inside 60 seconds') that is NOT the answer to this question."
+    },
+    {
+      "id": "q06",
+      "category": "single_fact",
+      "question": "What P99 latency threshold pages the on-call engineer?",
+      "source_documents": ["platform_reliability_runbook.md"],
+      "expected_answer": "1800 ms",
+      "expected_key_facts": ["P99_LATENCY_PAGE_THRESHOLD_MS = 1800"]
+    },
+    {
+      "id": "q07",
+      "category": "multi_fact",
+      "question": "For a Severity 1 incident, who gets paged and in what order if nobody acknowledges?",
+      "source_documents": ["platform_reliability_runbook.md"],
+      "expected_answer": "On-call primary immediately; secondary after 5 minutes unacknowledged; reliability lead after 10 minutes total unacknowledged.",
+      "expected_key_facts": [
+        "Pages the on-call primary immediately via PagerDuty.",
+        "If unacknowledged within 5 minutes, escalation pages the secondary",
+        "if still unacknowledged after 10 minutes total, the reliability lead is paged directly."
+      ]
+    },
+    {
+      "id": "q08",
+      "category": "cross_document_distractor",
+      "question": "How many days of warning does an employee get before something is automatically revoked for being out of date?",
+      "source_documents": ["device_data_handling_policy.md"],
+      "distractor_documents": ["mobile_release_policy.md"],
+      "expected_answer": "3 days (enrollment grace period before internal app access is revoked for an out-of-date OS).",
+      "expected_key_facts": ["ENROLLMENT_GRACE_PERIOD_DAYS (3 days) of warnings before internal app access is automatically revoked"],
+      "notes": "mobile_release_policy.md's STABLE_PROMOTION_DELAY_DAYS (10 days) is a different kind of delay on a different kind of automatic action; a model that pattern-matches on 'days before automatic X' alone can pick the wrong document."
+    },
+    {
+      "id": "q09",
+      "category": "single_fact",
+      "question": "What is the minimum passcode length required for an enrolled device?",
+      "source_documents": ["device_data_handling_policy.md"],
+      "expected_answer": "6 characters",
+      "expected_key_facts": ["PASSCODE_MIN_LENGTH = 6"]
+    },
+    {
+      "id": "q10",
+      "category": "multi_fact",
+      "question": "Can Restricted-tier data ever be cached on an employee-owned device?",
+      "source_documents": ["device_data_handling_policy.md"],
+      "expected_answer": "No — Restricted data must never be stored on an employee-owned device in any form, only viewed through a remote session with no local copy.",
+      "expected_key_facts": [
+        "Restricted data must never be stored on an employee-owned device in any form, including screenshots, clipboard history, or offline caches.",
+        "Restricted data may only be viewed through a remote session that leaves no local copy."
+      ]
+    },
+    {
+      "id": "q11",
+      "category": "cross_document_distractor",
+      "question": "What is the data retention period measured in years mentioned in this corpus, and which system does it apply to?",
+      "source_documents": ["vault_test_suite.md", "device_data_handling_policy.md"],
+      "expected_answer": "Ambiguous by design — there are at least three different year-denominated retention figures (ledger: 7 years; HR records: 7 years; email: 5 years) across two documents.",
+      "notes": "Deliberately underspecified. A good answer either asks which system, lists all matching figures with sources, or picks one AND cites which document/field it came from rather than presenting a single number as if it were the only one in the corpus. Scored manually, not by exact-match.",
+      "scoring": "manual"
+    },
+    {
+      "id": "q12",
+      "category": "single_fact",
+      "question": "How many days before a scheduled stable promotion does the soft code freeze begin?",
+      "source_documents": ["mobile_release_policy.md"],
+      "expected_answer": "5 days",
+      "expected_key_facts": ["A soft freeze begins 5 days before a scheduled stable promotion"]
+    },
+    {
+      "id": "q13",
+      "category": "multi_fact",
+      "question": "What happens if a device is not confirmed wiped within the escalation window after offboarding?",
+      "source_documents": ["device_data_handling_policy.md"],
+      "expected_answer": "It escalates to a full-device wipe request, which needs the device owner's manager to approve.",
+      "expected_key_facts": [
+        "If the device does not check in and confirm the wipe within FULL_WIPE_ESCALATION_DAYS (14 days), the case escalates to a full-device wipe request",
+        "which requires the device owner's manager to approve"
+      ]
+    },
+    {
+      "id": "q14",
+      "category": "unanswerable",
+      "question": "What is the company's policy on remote work stipends?",
+      "source_documents": [],
+      "expected_answer": "Not covered by this corpus.",
+      "expected_confidence": "none"
+    },
+    {
+      "id": "q15",
+      "category": "unanswerable",
+      "question": "Which cloud provider hosts the settlement ledger's database?",
+      "source_documents": [],
+      "expected_answer": "Not covered by this corpus.",
+      "expected_confidence": "none"
+    },
+    {
+      "id": "q16",
+      "category": "unanswerable",
+      "question": "What is the escalation path if a Severity 3 incident is not resolved within 24 hours?",
+      "source_documents": [],
+      "expected_answer": "Not covered — the runbook defines Severity 3 as no-page, but states no escalation path or time bound for it at all.",
+      "expected_confidence": "none",
+      "notes": "Adjacent-fact trap: the corpus discusses Severity 1/2 escalation timing extensively, which can tempt a model into extrapolating a Severity 3 timeline that was never stated."
+    },
+    {
+      "id": "q17",
+      "category": "cross_document_synthesis",
+      "question": "Both the trading system and the mobile release pipeline describe an automatic kill switch that can be resumed by different levels of approval — compare who can resume each one.",
+      "source_documents": ["vault_test_suite.md", "mobile_release_policy.md"],
+      "expected_answer": "Trading: requires cryptographic authorization from two independent operators (a single desk head cannot do it alone). Mobile release: the mobile lead alone can resume it, by attaching a root-cause note to the release ticket.",
+      "notes": "Tests whether retrieval pulls chunks from both documents for one query, and whether the model keeps the two approval paths distinct rather than merging them.",
+      "scoring": "manual"
+    },
+    {
+      "id": "q18",
+      "category": "single_fact",
+      "question": "What is the maximum universal APK size allowed?",
+      "source_documents": ["mobile_release_policy.md"],
+      "expected_answer": "200 MB",
+      "expected_key_facts": ["MAX_APK_SIZE_MB_UNIVERSAL = 200"]
+    },
+    {
+      "id": "q19",
+      "category": "single_fact",
+      "question": "How long after discovering a lost device must it be reported?",
+      "source_documents": ["device_data_handling_policy.md"],
+      "expected_answer": "Within 2 hours of discovery.",
+      "expected_key_facts": ["A lost or stolen device enrolled in device management must be reported within 2 hours of discovery."]
+    },
+    {
+      "id": "q20",
+      "category": "multi_fact",
+      "question": "What clock-skew anomaly between gateways is treated as a kill-switch trigger?",
+      "source_documents": ["vault_test_suite.md"],
+      "expected_answer": "An anomalous clock skew greater than 250 microseconds between gateways.",
+      "expected_key_facts": ["An anomalous clock skew greater than 250 microseconds is detected between gateways."]
+    }
+  ]
+}

@@ -546,15 +546,80 @@ String _dropDanglingTail(String input) {
 }
 
 /// Syntactic repairs only. Nothing here changes meaning.
+///
+/// EVERY REPAIR IS APPLIED OUTSIDE STRING LITERALS ONLY, and that is not
+/// fussiness — a naive global regex corrupts good content. The capsule's
+/// `answer` is prose written by a model, and prose contains the exact
+/// patterns these rules look for:
+///
+///   {"answer": "see section 3, note: important", "caveats": [],}
+///
+/// That input is unparseable for one reason (the trailing comma). Repairing
+/// it globally also rewrites `, note:` inside the answer into `, "note":`,
+/// which closes the string early and produces something broken in a *new*
+/// way. Same for the Python-literal pass and any answer containing the word
+/// "None".
+///
+/// So the text is split into alternating literal and non-literal runs, and
+/// only the non-literal runs are touched. The cost of getting this wrong is
+/// not a wrong answer — the result still fails to parse and the caller falls
+/// back to the retrieval capsule — but it silently throws away capsules that
+/// were one comma from being fine.
 String _repair(String json) {
-  var out = json;
-
-  // Smart quotes, which some tokenizers emit for ASCII quotes.
-  out = out
+  // Smart quotes first, before segmentation: when a tokenizer emits curly
+  // quotes they ARE the string delimiters, so the splitter below cannot find
+  // literal boundaries until they are normalised.
+  final normalised = json
       .replaceAll('“', '"')
       .replaceAll('”', '"')
       .replaceAll('‘', "'")
       .replaceAll('’', "'");
+
+  final out = StringBuffer();
+  var i = 0;
+  var segmentStart = 0;
+
+  void flushCode(int end) {
+    if (end > segmentStart) {
+      out.write(_repairCode(normalised.substring(segmentStart, end)));
+    }
+  }
+
+  while (i < normalised.length) {
+    if (normalised[i] != '"') {
+      i++;
+      continue;
+    }
+
+    // Start of a literal: emit the code run before it untouched by string
+    // rules, then copy the literal through verbatim.
+    flushCode(i);
+    final literalStart = i;
+    i++;
+    var escaped = false;
+    while (i < normalised.length) {
+      final ch = normalised[i];
+      if (escaped) {
+        escaped = false;
+      } else if (ch == r'\') {
+        escaped = true;
+      } else if (ch == '"') {
+        i++;
+        break;
+      }
+      i++;
+    }
+    out.write(normalised.substring(literalStart, i));
+    segmentStart = i;
+  }
+  flushCode(normalised.length);
+
+  return out.toString();
+}
+
+/// The actual repairs, for a run of text known to contain no string literal.
+String _repairCode(String code) {
+  var out = code;
 
   // Trailing commas before a closer. replaceAllMapped, not replaceAll:
   // String.replaceAll does not expand $1, so the plain version silently

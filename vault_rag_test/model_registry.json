@@ -1,0 +1,39 @@
+{
+  "description": "Candidate models for the llama.cpp/GGUF reasoning path (see PocketRAG_Snapdragon_Implementation_Plan.md and llama_runtime.dart). Side-loaded via Office Kit, same as the existing Gemma/MediaPipe model — no in-app downloader, no INTERNET permission added for this. Downloaded and verified on 2026-09-13.",
+  "models": [
+    {
+      "id": "qwen3-1.7b-q4-k-m",
+      "displayName": "Qwen3 1.7B Q4_K_M",
+      "role": "primary efficiency candidate",
+      "format": "gguf",
+      "source": "https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf",
+      "sourceRepo": "unsloth/Qwen3-1.7B-GGUF",
+      "filename": "Qwen3-1.7B-Q4_K_M.gguf",
+      "sizeBytes": 1107409472,
+      "sha256": "b139949c5bd74937ad8ed8c8cf3d9ffb1e99c866c823204dc42c0d91fa181897",
+      "runtime": "llama.cpp",
+      "notes": "Official Qwen/Qwen3-1.7B-GGUF only ships Q8_0; unsloth is the widely-used, llama.cpp-community-standard source for K-quants of this model."
+    },
+    {
+      "id": "smollm2-1.7b-instruct-q4-k-m",
+      "displayName": "SmolLM2 1.7B-Instruct Q4_K_M",
+      "role": "lightweight fallback candidate",
+      "format": "gguf",
+      "source": "https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF/resolve/main/smollm2-1.7b-instruct-q4_k_m.gguf",
+      "sourceRepo": "HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF",
+      "filename": "smollm2-1.7b-instruct-q4_k_m.gguf",
+      "sizeBytes": 1055609536,
+      "sha256": "decd2598bc2c8ed08c19adc3c8fdd461ee19ed5708679d1c54ef54a5a30d4f33",
+      "runtime": "llama.cpp",
+      "notes": "First-party source — HuggingFaceTB is the model's own publishing org, and this repo ships the Q4_K_M quant directly."
+    }
+  ],
+  "notCollectedYet": [
+    {
+      "id": "gemma-2-2b-gguf",
+      "displayName": "Gemma 2 2B (GGUF variant)",
+      "role": "current baseline / quality reference, per the PocketRAG plan",
+      "reason": "Gemma already runs via the working MediaPipe path (llm_runtime.dart); a GGUF copy is only needed for a direct cross-runtime comparison, which is lower priority than proving the two genuinely new models."
+    }
+  ]
+}

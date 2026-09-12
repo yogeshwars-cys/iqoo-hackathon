@@ -8,12 +8,16 @@ a working demo.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
 from typing import Any, Dict
 
-BRIDGE_URL = "http://127.0.0.1:8000"
+# Overridable so the commands can be pointed at a bridge on another port —
+# port 8000 is popular and something else is often already on it. The tests
+# rely on this too, since they run a real bridge on an ephemeral port.
+BRIDGE_URL = os.environ.get("VAULT_BRIDGE_URL", "http://127.0.0.1:8000").rstrip("/")
 
 # Retrieval is a quarter of a second; generation on a mid-range phone is
 # seconds to tens of seconds; embedding a large file is one encoder pass per
@@ -72,10 +76,20 @@ def post(path: str, payload: Dict[str, Any], timeout: float) -> Dict[str, Any]:
 
 
 def _http_error(exc: urllib.error.HTTPError) -> str:
+    detail = ""
     try:
-        detail = json.loads(exc.read().decode("utf-8")).get("error", "")
+        body = json.loads(exc.read().decode("utf-8"))
     except Exception:  # noqa: BLE001
-        detail = ""
+        body = None
+
+    if isinstance(body, dict):
+        detail = body.get("error", "")
+        # FastAPI's own validation failures use "detail", not "error", and
+        # carry a list of per-field problems. Without this a bad --top-k
+        # reported only "HTTP 422: Unprocessable Content", which tells the
+        # user neither which argument was wrong nor what the valid range is.
+        if not detail and "detail" in body:
+            detail = _validation_detail(body["detail"])
 
     if exc.code == 503:
         return detail or (
@@ -85,6 +99,23 @@ def _http_error(exc: urllib.error.HTTPError) -> str:
     if exc.code == 504:
         return detail or "The phone did not answer in time."
     return f"HTTP {exc.code}: {detail or exc.reason}"
+
+
+def _validation_detail(detail: Any) -> str:
+    """Flattens FastAPI's 422 body into one line a human can act on."""
+    if isinstance(detail, str):
+        return detail
+    if not isinstance(detail, list):
+        return ""
+    parts = []
+    for item in detail:
+        if not isinstance(item, dict):
+            continue
+        # loc is ("body", "top_k"); the tail is the field the caller named.
+        location = item.get("loc") or []
+        field = str(location[-1]) if location else "request"
+        parts.append(f"{field}: {item.get('msg', 'invalid')}")
+    return "; ".join(parts)
 
 
 def _unreachable(exc: Exception) -> str:

@@ -80,6 +80,11 @@ class BridgeClient extends ChangeNotifier {
   /// the difference between "the link dropped" and "we were told to stop".
   bool _stopRequested = false;
 
+  /// Incremented once per dial attempt, and checked again on the far side of
+  /// the handshake so a superseded attempt can tell that it lost. See
+  /// [_openSocket] for why a simple in-flight boolean will not do.
+  int _dialGeneration = 0;
+
   int _reconnectAttempt = 0;
   int _servedQueries = 0;
   int _servedIndexes = 0;
@@ -119,6 +124,15 @@ class BridgeClient extends ChangeNotifier {
     _reconnectTimer?.cancel();
     await _teardownSocket();
 
+    // Claim this attempt. Two dials can genuinely overlap: the Connect
+    // button is only disabled once the state turns `connecting`, and
+    // _connect() awaits a settings file write before it gets here, so a
+    // double tap inside that gap starts two. A plain in-flight boolean
+    // would fix that by dropping the second dial — wrong, because the
+    // second one may carry a corrected IP address. A generation counter
+    // lets the newest attempt win instead.
+    final generation = ++_dialGeneration;
+
     _state = BridgeState.connecting;
     _statusDetail = 'Dialling $endpoint';
     notifyListeners();
@@ -126,6 +140,31 @@ class BridgeClient extends ChangeNotifier {
     try {
       final socket = await WebSocket.connect(endpoint)
           .timeout(const Duration(seconds: 8));
+
+      // The dial takes up to eight seconds, and a lot can happen inside that
+      // window. [disconnect] and [dispose] can land: neither can tear down a
+      // socket that does not exist yet — `_socket` is still null while the
+      // handshake is in flight — so their teardown is a no-op and the guard
+      // at the top of this method has already been passed. A second dial can
+      // also have started and overtaken this one.
+      //
+      // Either way the socket in hand is unwanted, and adopting it is worse
+      // than dropping it. Without this check the link the user just closed
+      // comes up anyway — the app shows LOCAL while the desktop stays linked
+      // and can go on asking the vault questions — and a losing dial installs
+      // itself over the winner, orphaning a fully live socket whose listener
+      // is still serving requests and which no later disconnect() can reach,
+      // because `_socket` no longer points at it. For an air-gap claim that
+      // is the whole ball game, so the unwanted socket is closed here.
+      if (_stopRequested || generation != _dialGeneration) {
+        try {
+          await socket.close();
+        } catch (_) {
+          // Nothing to salvage; it was never handed to anyone.
+        }
+        return;
+      }
+
       _socket = socket;
       // Without a ping interval a link that dies silently (phone sleeps,
       // laptop suspends, AP drops the session) looks connected forever.
@@ -151,6 +190,11 @@ class BridgeClient extends ChangeNotifier {
         (_) => _sendTelemetry(),
       );
     } catch (e) {
+      // A dial that has already been superseded or cancelled must fail
+      // quietly. Reporting it would put the client into `error` and start a
+      // reconnect loop on top of a link that is up and working — the classic
+      // way a retry turns one transient failure into a permanent flap.
+      if (_stopRequested || generation != _dialGeneration) return;
       _state = BridgeState.error;
       _statusDetail = _explain(e);
       _emit('Connect failed: ${_explain(e)}', BridgeEventKind.failure);

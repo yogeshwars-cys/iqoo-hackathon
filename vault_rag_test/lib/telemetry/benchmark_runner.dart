@@ -35,6 +35,7 @@ import 'package:flutter/foundation.dart';
 
 import '../core/embedding_service.dart';
 import '../core/vault_engine.dart';
+import 'compute_telemetry.dart';
 
 /// Fixed benchmark input. Deliberately prose-like and long enough to fill a
 /// good fraction of the 256-token window: a short string exits the encoder
@@ -107,10 +108,16 @@ class BackendResult {
   /// which is itself a result worth showing, not an error to hide.
   final String? unavailableReason;
 
+  /// Device-wide CPU/GPU/NPU utilisation averaged over the time this
+  /// backend's timed iterations actually ran. Null when the backend never
+  /// built, since there is no window to average.
+  final ComputeUsageSummary? computeUsage;
+
   const BackendResult({
     required this.backend,
     this.stats,
     this.unavailableReason,
+    this.computeUsage,
   });
 
   bool get isAvailable => stats != null;
@@ -119,6 +126,7 @@ class BackendResult {
         'backend': backend,
         if (stats != null) ...stats!.toJson(),
         if (unavailableReason != null) 'unavailable': unavailableReason,
+        if (computeUsage != null) 'compute_usage': computeUsage!.toJson(),
       };
 }
 
@@ -140,8 +148,10 @@ class BenchmarkReport {
   /// Populated only when a backend sweep was requested.
   final List<BackendResult> comparison;
 
-  /// Telemetry averages across the run.
-  final Map<String, dynamic> computeDuringRun;
+  /// Device-wide CPU/GPU/NPU utilisation averaged over the live embedding
+  /// loop — the backend the app is actually running, as opposed to the
+  /// throwaway interpreters in [comparison].
+  final ComputeUsageSummary liveComputeUsage;
 
   const BenchmarkReport({
     required this.startedAt,
@@ -154,7 +164,7 @@ class BenchmarkReport {
     required this.retrieval,
     required this.corpusChunks,
     required this.comparison,
-    required this.computeDuringRun,
+    required this.liveComputeUsage,
   });
 
   Map<String, dynamic> toJson() => {
@@ -170,7 +180,7 @@ class BenchmarkReport {
         'corpus_chunks': corpusChunks,
         if (comparison.isNotEmpty)
           'backend_comparison': comparison.map((c) => c.toJson()).toList(),
-        'compute_during_run': computeDuringRun,
+        'compute_usage': liveComputeUsage.toJson(),
       };
 }
 
@@ -181,10 +191,11 @@ enum BenchmarkPhase { idle, warmup, embedding, retrieval, comparison, done }
 class BenchmarkRunner extends ChangeNotifier {
   final VaultEngine engine;
 
-  /// Returns a snapshot of live compute telemetry, averaged into the report.
-  final Map<String, dynamic> Function() telemetrySnapshot;
+  /// Source of both the live utilisation snapshot and the sampled history a
+  /// run's [ComputeUsageSummary] is averaged from.
+  final ComputeTelemetry telemetry;
 
-  BenchmarkRunner({required this.engine, required this.telemetrySnapshot});
+  BenchmarkRunner({required this.engine, required this.telemetry});
 
   BenchmarkPhase _phase = BenchmarkPhase.idle;
   double _progress = 0;
@@ -228,7 +239,6 @@ class BenchmarkRunner extends ChangeNotifier {
     _cancelRequested = false;
     _report = null;
     final startedAt = DateTime.now();
-    final computeStart = telemetrySnapshot();
 
     // --- warm-up ----------------------------------------------------------
     _update(BenchmarkPhase.warmup, 0, 'Warming up ($warmup discarded)…');
@@ -236,6 +246,12 @@ class BenchmarkRunner extends ChangeNotifier {
       await engine.embedOnce(_benchmarkText);
       await _breathe();
     }
+
+    // Measured from here, not from [startedAt] — the discarded warm-up
+    // iterations exist specifically to absorb the cold-governor ramp, and
+    // folding them into the utilisation window would pull the average down
+    // for a regime the latency numbers already excluded.
+    final liveWindowStart = DateTime.now();
 
     // --- embedding latency ------------------------------------------------
     final embedSamples = <double>[];
@@ -284,7 +300,6 @@ class BenchmarkRunner extends ChangeNotifier {
       }
     }
 
-    final computeEnd = telemetrySnapshot();
     final report = BenchmarkReport(
       startedAt: startedAt,
       warmup: warmup,
@@ -296,7 +311,10 @@ class BenchmarkRunner extends ChangeNotifier {
       retrieval: retrievalStats,
       corpusChunks: engine.chunkCount,
       comparison: comparison,
-      computeDuringRun: {'at_start': computeStart, 'at_end': computeEnd},
+      liveComputeUsage: summarizeUsage(
+        telemetry.samplesSince(liveWindowStart),
+        thermal: telemetry.thermal,
+      ),
     );
 
     _report = report;
@@ -338,6 +356,7 @@ class BenchmarkRunner extends ChangeNotifier {
       // One discarded call: a brand-new interpreter's first inference
       // includes arena allocation.
       await probe.embed(_benchmarkText);
+      final windowStart = DateTime.now();
       for (var i = 0; i < iterations && !_cancelRequested; i++) {
         await probe.embed(_benchmarkText);
         samples.add(probe.lastInferenceMicros / 1000);
@@ -348,7 +367,11 @@ class BenchmarkRunner extends ChangeNotifier {
         );
         await _breathe();
       }
-      return BackendResult(backend: name, stats: LatencyStats(samples));
+      return BackendResult(
+        backend: name,
+        stats: LatencyStats(samples),
+        computeUsage: summarizeUsage(telemetry.samplesSince(windowStart)),
+      );
     } catch (e) {
       return BackendResult(
         backend: name,

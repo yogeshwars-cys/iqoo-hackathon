@@ -19,15 +19,27 @@ Requires bridge_server.py to be running and a phone linked to it.
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.request
 from typing import Any, Dict
 
-from mcp.server.fastmcp import FastMCP
+try:
+    # mcp 1.x
+    from mcp.server.fastmcp import FastMCP as _McpServer
+except ModuleNotFoundError:  # pragma: no cover - depends on installed version
+    # mcp 2.x renamed FastMCP to MCPServer and moved it. The decorator and
+    # run() surface we use is identical, so aliasing is enough — and it beats
+    # pinning mcp<2 forever, which is what a bare `mcp>=1.2` in
+    # requirements.txt silently did to anyone installing after the 2.0
+    # release: the import failed outright and the server would not start.
+    from mcp.server.mcpserver import MCPServer as _McpServer
 
-mcp = FastMCP("iqoo-phone")
+mcp = _McpServer("iqoo-phone")
 
-BRIDGE_URL = "http://127.0.0.1:8000"
+# Matches vault_cli.client: same override, so moving the bridge off port 8000
+# does not mean editing two files and forgetting one of them.
+BRIDGE_URL = os.environ.get("VAULT_BRIDGE_URL", "http://127.0.0.1:8000").rstrip("/")
 
 
 def _get(path: str, timeout: float = 5.0) -> Dict[str, Any]:

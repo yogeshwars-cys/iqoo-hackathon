@@ -51,6 +51,20 @@ there. Nothing is embedded on this machine. Directory walks skip `.git`,
 `node_modules`, `build` and friends, and anything that is not valid UTF-8 is
 skipped with a reason rather than uploaded for the device to reject.
 
+One document per request, and a request has to fit in a single WebSocket
+frame — about 1 MB. That ceiling is the receiver's, not ours: a client that
+is handed a larger frame does not drop it, it closes the connection with
+status 1009, which would strand every other request in flight. So oversized
+files are refused (exit code 1) rather than risked. The command checks the
+file size early and the bridge re-checks the serialised frame, because JSON
+escaping inflates non-ASCII badly — an emoji is 4 bytes on disk and 12 on
+the wire — so a file comfortably under the cap can still be refused with a
+`413`. Split the document if you hit it.
+
+Exit codes are meant for scripts: `0` only when everything named was
+actually embedded, `1` if any upload failed or nothing got through at all
+(every file binary, empty, or too large).
+
 ### `vault-query` — ask, and get a capsule
 
 ```powershell
@@ -167,7 +181,35 @@ phone → desktop   {"action": "telemetry", "data": {…}}      (every 2 s)
 One ordering constraint, and it bites silently: the server checks `action`
 **before** `id`, so a reply must never use the action name `telemetry` — it
 would be swallowed as a status frame and the caller would time out with no
-error logged anywhere. The Dart client sends `result`.
+error logged anywhere. The Dart client sends `result`. The bridge now prints
+a warning when a `telemetry` frame carries the `id` of a live request, which
+is the only cheap way to tell that footgun apart from a slow phone.
+
+## Tests
+
+```powershell
+python -m pytest tests\           # or: python tests\test_units.py
+```
+
+No phone and no device needed. `tests/fake_phone.py` runs the real
+`bridge_server` app on an ephemeral port and links a WebSocket client that
+speaks the protocol — including badly on purpose, which is the only way to
+cover the cases that matter here: a reply that is not a JSON object, an
+unparseable frame, a second phone, a hang-up mid-request, a payload over the
+frame limit. `test_units.py` needs nothing but the stdlib; `test_protocol.py`
+needs the bridge's own `requirements.txt`. Both files also run as plain
+scripts, so pytest is convenient rather than required.
+
+## Running the bridge on another port
+
+Port 8000 is popular. `VAULT_BRIDGE_URL` moves the client side:
+
+```powershell
+$env:VAULT_BRIDGE_URL = "http://127.0.0.1:8100"
+```
+
+Both `vault-*` commands and the MCP server read it. The server's own port is
+still the `uvicorn.run(...)` call at the bottom of `bridge_server.py`.
 
 ## A note on the corpus
 

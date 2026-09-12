@@ -96,11 +96,32 @@ def show_status() -> int:
     return 0
 
 
+def _text(value: Any, fallback: str = "") -> str:
+    """Coerces a capsule field to a string.
+
+    `capsule.get("answer", "")` is not enough: the key is usually present but
+    explicitly null when generation failed on the device, and a default only
+    applies to a missing key. That handed None straight to wrap() and the
+    command died with an AttributeError traceback instead of rendering the
+    rest of a perfectly usable capsule.
+    """
+    if value is None:
+        return fallback
+    return value if isinstance(value, str) else str(value)
+
+
+def _similarity(value: Any) -> str:
+    """Formats a cosine score, or a placeholder if the phone omitted it."""
+    if isinstance(value, (int, float)):
+        return f"{value:.4f}"
+    return "  ?   "
+
+
 def render(capsule: Dict[str, Any], roundtrip_ms: float) -> None:
     generation = capsule.get("generation", {}) or {}
     generated = generation.get("ran") and not generation.get("parse_error")
 
-    heading(f"vault-query · {capsule.get('query', '')}")
+    heading(f"vault-query · {_text(capsule.get('query'))}")
 
     retrieval = capsule.get("retrieval", {}) or {}
     line = (f"  retrieval {retrieval.get('latency_ms', '?')} ms "
@@ -115,9 +136,10 @@ def render(capsule: Dict[str, Any], roundtrip_ms: float) -> None:
     print()
     label = "ANSWER (generated on-device)" if generated \
         else "ANSWER (extracted verbatim — no model ran)"
-    print(f"  {label}   confidence: {capsule.get('confidence', '?')}")
+    print(f"  {label}   confidence: {_text(capsule.get('confidence'), '?')}")
     print()
-    print(wrap(capsule.get("answer", ""), indent="    "))
+    print(wrap(_text(capsule.get("answer"), "(no answer in capsule)"),
+               indent="    "))
     print()
 
     facts: List[Dict[str, Any]] = capsule.get("key_facts") or []
@@ -127,26 +149,31 @@ def render(capsule: Dict[str, Any], roundtrip_ms: float) -> None:
             # The badge is a substring check against the retrieved text, not
             # a judgement about truth. A model that invents a quote is caught
             # here, which is the whole reason verbatim is mandatory.
+            if not isinstance(fact, dict):
+                continue
             mark = "OK " if fact.get("verified") else "?? "
-            print(f"    [{mark}] {fact.get('fact')}")
+            print(f"    [{mark}] {_text(fact.get('fact'))}")
             if fact.get("verbatim"):
-                print(f"           {fact['verbatim'][:70]}")
+                print(f"           {_text(fact['verbatim'])[:70]}")
             if fact.get("source"):
-                print(f"           — {fact['source']}")
+                print(f"           — {_text(fact['source'])}")
         print()
 
     caveats = capsule.get("caveats") or []
     if caveats:
         print("  CAVEATS")
         for caveat in caveats:
-            print(wrap(f"- {caveat}", indent="    ", hanging="      "))
+            print(wrap(f"- {_text(caveat)}", indent="    ", hanging="      "))
         print()
 
     sources = capsule.get("sources") or []
     if sources:
         print("  SOURCES")
         for source in sources:
-            print(f"    {source.get('similarity'):.4f}  {source.get('file')}")
+            if not isinstance(source, dict):
+                continue
+            print(f"    {_similarity(source.get('similarity'))}  "
+                  f"{_text(source.get('file'), '(unnamed)')}")
         print()
 
     if generation.get("parse_error"):
@@ -167,8 +194,11 @@ def run_query(text: str, top_k: int, generate: bool,
     except BridgeError as exc:
         return fail(str(exc))
 
+    if not isinstance(capsule, dict):
+        return fail(f"Bridge returned {type(capsule).__name__}, not a capsule.")
+
     if "error" in capsule:
-        return fail(capsule["error"])
+        return fail(_text(capsule["error"], "Unknown error from the bridge."))
 
     roundtrip = (time.perf_counter() - started) * 1000
 
@@ -214,6 +244,15 @@ def main(argv: List[str] | None = None) -> int:
     if not args.prompt:
         parser.print_help()
         return 2
+
+    # Caught here rather than left to the server's 422, which arrives as
+    # "HTTP 422: Unprocessable Content" and names neither the argument nor
+    # the range. The bound mirrors QueryRequest/AskRequest in bridge_server.
+    if not 1 <= args.top_k <= 20:
+        return fail(f"--top-k must be between 1 and 20 (got {args.top_k}).")
+
+    if not " ".join(args.prompt).strip():
+        return fail("The question is empty.")
 
     return run_query(
         " ".join(args.prompt),

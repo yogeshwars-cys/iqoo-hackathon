@@ -79,14 +79,32 @@ class VectorStore {
     );
     final scored = <RetrievedChunk>[];
 
+    _lastDimensionMismatches = 0;
+
     for (final row in rows) {
       final candidate = _decode(row['embedding'] as Uint8List);
-      final score = _cosine(queryEmbedding, candidate);
+
+      // Skip rows the query cannot be compared against, rather than letting
+      // the arithmetic decide. A stored vector of a different length means
+      // it came from a different encoder, and a similarity between the two
+      // is not a smaller number — it is a meaningless one. Before this
+      // guard, cosineSimilarity indexed the shorter list off its end and
+      // threw a RangeError that failed the entire query, so one bad row
+      // took down every search against the vault.
+      //
+      // Reachable without anything exotic: swapping the bundled encoder for
+      // one with a different dimensionality, or a BLOB truncated by a write
+      // interrupted mid-ingest.
+      if (candidate.length != queryEmbedding.length) {
+        _lastDimensionMismatches++;
+        continue;
+      }
+
       scored.add(RetrievedChunk(
         id: row['id'] as String,
         fileName: row['file_name'] as String,
         content: row['content'] as String,
-        score: score,
+        score: cosineSimilarity(queryEmbedding, candidate),
       ));
     }
 
@@ -94,16 +112,10 @@ class VectorStore {
     return scored.take(k).toList();
   }
 
-  double _cosine(Float32List a, Float32List b) {
-    var dot = 0.0, normA = 0.0, normB = 0.0;
-    for (var i = 0; i < a.length; i++) {
-      dot += a[i] * b[i];
-      normA += a[i] * a[i];
-      normB += b[i] * b[i];
-    }
-    if (normA == 0 || normB == 0) return 0.0;
-    return dot / (math.sqrt(normA) * math.sqrt(normB));
-  }
+  /// Rows whose stored vector did not match the query's dimensionality, from
+  /// the most recent [topK]. Zero in normal operation; see [topK].
+  int get lastDimensionMismatches => _lastDimensionMismatches;
+  int _lastDimensionMismatches = 0;
 
   // Explicit little-endian byte packing rather than a raw buffer view —
   // safer across host byte orders and doesn't assume the BLOB's backing
@@ -126,4 +138,33 @@ class VectorStore {
   }
 
   void close() => _db.dispose();
+}
+
+/// Cosine similarity of two equal-length vectors.
+///
+/// Top-level rather than a method on [VectorStore] so it can be tested on
+/// the host: opening a store requires the sqlite3 native library, which the
+/// Flutter test runner does not load, and this is the part with the
+/// arithmetic worth testing.
+///
+/// Returns 0 for a length mismatch instead of throwing. Callers should skip
+/// such pairs before getting here — [VectorStore.topK] does — but a scoring
+/// function that can throw is a scoring function that can fail a whole query
+/// on one bad row, and that is not a trade worth making inside a loop over
+/// the entire corpus.
+double cosineSimilarity(Float32List a, Float32List b) {
+  if (a.length != b.length || a.isEmpty) return 0.0;
+
+  var dot = 0.0, normA = 0.0, normB = 0.0;
+  for (var i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  if (normA == 0 || normB == 0) return 0.0;
+
+  final score = dot / (math.sqrt(normA) * math.sqrt(normB));
+  // Float error can push a unit-vector dot product a hair outside [-1, 1],
+  // and a similarity of 1.0000001 in a JSON capsule reads as a bug.
+  return score.isFinite ? score.clamp(-1.0, 1.0) : 0.0;
 }

@@ -217,12 +217,21 @@ class _StreamChartPainter extends CustomPainter {
     // Split into runs of consecutive non-null samples. Each run is drawn
     // independently, so a gap is a visible break rather than a line through
     // data that does not exist.
+    //
+    // A run of one is kept, not discarded. It cannot be stroked — a polyline
+    // needs two points — but it is a real measurement, and the run loop
+    // below already draws a single-point run as a dot. Dropping it here
+    // would silently delete exactly the samples this chart exists to be
+    // honest about: on a ROM where the KGSL read intermittently succeeds,
+    // every isolated GPU reading is an island between two gaps, and a lane
+    // with one readable sample in the whole window would draw nothing at
+    // all while the tile above it printed a number.
     final runs = <List<Offset>>[];
     var current = <Offset>[];
     for (var i = 0; i < s.values.length; i++) {
       final v = s.values[i];
       if (v == null) {
-        if (current.length > 1) runs.add(current);
+        if (current.isNotEmpty) runs.add(current);
         current = <Offset>[];
         continue;
       }

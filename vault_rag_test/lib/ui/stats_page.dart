@@ -20,10 +20,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/embedding_service.dart';
+import '../core/llm/llm_runtime.dart';
 import '../core/vault_engine.dart';
 import '../telemetry/benchmark_runner.dart';
 import '../telemetry/compute_telemetry.dart';
 import '../telemetry/device_info.dart';
+import '../telemetry/llm_benchmark_runner.dart';
 import '../telemetry/telemetry_sources.dart';
 import 'theme.dart';
 import 'widgets/common.dart';
@@ -32,6 +34,8 @@ import 'widgets/stream_chart.dart';
 class StatsPage extends StatefulWidget {
   final ComputeTelemetry telemetry;
   final BenchmarkRunner benchmark;
+  final LlmBenchmarkRunner llmBenchmark;
+  final LlmRuntime llm;
   final VaultEngine engine;
   final String vocabText;
 
@@ -39,6 +43,8 @@ class StatsPage extends StatefulWidget {
     super.key,
     required this.telemetry,
     required this.benchmark,
+    required this.llmBenchmark,
+    required this.llm,
     required this.engine,
     required this.vocabText,
   });
@@ -49,7 +55,7 @@ class StatsPage extends StatefulWidget {
 
 class _StatsPageState extends State<StatsPage> {
   final Set<ComputeLane> _hidden = {};
-  bool _compareBackends = false;
+  final Set<EmbeddingBackend> _sweepBackends = {};
 
   @override
   Widget build(BuildContext context) {
@@ -66,6 +72,10 @@ class _StatsPageState extends State<StatsPage> {
         _clocksSection(),
         const SizedBox(height: VaultSpace.md),
         _benchmarkSection(),
+        const SizedBox(height: VaultSpace.md),
+        _reasoningBenchmarkSection(),
+        const SizedBox(height: VaultSpace.md),
+        _combinedReportSection(),
       ],
     );
   }
@@ -389,9 +399,11 @@ class _StatsPageState extends State<StatsPage> {
                   label: const Text('Cancel'),
                 ),
               ] else ...[
-                _CompareToggle(
-                  value: _compareBackends,
-                  onChanged: (v) => setState(() => _compareBackends = v),
+                _BackendSweepPicker(
+                  selected: _sweepBackends,
+                  onChanged: (v) => setState(() {
+                    if (!_sweepBackends.remove(v)) _sweepBackends.add(v);
+                  }),
                 ),
                 const SizedBox(height: VaultSpace.md),
                 FilledButton.icon(
@@ -415,9 +427,7 @@ class _StatsPageState extends State<StatsPage> {
 
   Future<void> _runBenchmark() async {
     await widget.benchmark.run(
-      compareBackends: _compareBackends
-          ? const [EmbeddingBackend.xnnpack, EmbeddingBackend.cpu]
-          : const [],
+      compareBackends: _sweepBackends.toList(),
       vocabText: widget.vocabText,
     );
   }
@@ -426,7 +436,8 @@ class _StatsPageState extends State<StatsPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _statRow('Embedding · ${r.liveBackend}', r.live),
+        _statRow('Embedding · ${r.liveBackend}', r.live,
+            usage: r.liveComputeUsage),
         if (r.retrieval != null) ...[
           const SizedBox(height: VaultSpace.sm),
           _statRow('Retrieval · ${r.corpusChunks} chunks', r.retrieval!),
@@ -445,7 +456,7 @@ class _StatsPageState extends State<StatsPage> {
           const SizedBox(height: VaultSpace.sm),
           for (final c in r.comparison) ...[
             if (c.isAvailable)
-              _statRow(c.backend, c.stats!)
+              _statRow(c.backend, c.stats!, usage: c.computeUsage)
             else
               Padding(
                 padding: const EdgeInsets.only(bottom: VaultSpace.sm),
@@ -485,7 +496,7 @@ class _StatsPageState extends State<StatsPage> {
   /// long and asymmetric, so the mean sits somewhere no individual run
   /// actually landed. p90 and max are printed beside it because the spread
   /// is the throttling signal.
-  Widget _statRow(String label, LatencyStats s) {
+  Widget _statRow(String label, LatencyStats s, {ComputeUsageSummary? usage}) {
     Widget cell(String k, String v, {Color? color}) => Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -547,7 +558,37 @@ class _StatsPageState extends State<StatsPage> {
             '${s.throughputPerSecond.toStringAsFixed(2)}/s over ${s.count} runs',
             style: const TextStyle(color: VaultColors.faint, fontSize: 10.5),
           ),
+          if (usage != null) ...[
+            const SizedBox(height: VaultSpace.sm),
+            _usageLine(usage),
+          ],
         ],
+      ),
+    );
+  }
+
+  /// One line of CPU/GPU/NPU averages for the window a benchmark row timed —
+  /// the number this whole feature exists to surface, next to the latency it
+  /// was measured alongside rather than on a separate screen.
+  Widget _usageLine(ComputeUsageSummary usage) {
+    String fmt(ComputeLane lane) {
+      final v = usage.averagePercent[lane];
+      if (v == null) return '${lane.label} —';
+      final kind = usage.kind[lane];
+      final suffix = kind == ProbeKind.proxy ? '%*' : '%';
+      return '${lane.label} ${v.toStringAsFixed(0)}$suffix';
+    }
+
+    return Text(
+      '${ComputeLane.values.map(fmt).join('  ·  ')}  ·  '
+      '${usage.sampleCount} samples'
+      '${usage.thermal?.throttling == true ? '  ·  THROTTLING' : ''}',
+      style: TextStyle(
+        color: usage.thermal?.throttling == true
+            ? VaultColors.warn
+            : VaultColors.faint,
+        fontSize: 10,
+        fontFamily: VaultText.mono.fontFamily,
       ),
     );
   }
@@ -561,6 +602,192 @@ class _StatsPageState extends State<StatsPage> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Benchmark report copied')),
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Reasoning benchmark
+  // ---------------------------------------------------------------------
+
+  /// Deliberately never offers a backend sweep the way [_benchmarkSection]
+  /// does. See `llm_benchmark_runner.dart` for why: a wrong TFLite delegate
+  /// throws, a wrong MediaPipe backend on mismatched weights segfaults the
+  /// whole process, and there is no safe way to build "try GPU, fall back to
+  /// CPU" into an automated sweep for that. This times whatever [LlmRuntime]
+  /// already has loaded through the Model tab's crash-checked path.
+  Widget _reasoningBenchmarkSection() {
+    return ListenableBuilder(
+      listenable: Listenable.merge([widget.llmBenchmark, widget.llm]),
+      builder: (context, _) {
+        final b = widget.llmBenchmark;
+        final llm = widget.llm;
+        return SectionCard(
+          title: 'Reasoning benchmark',
+          subtitle: llm.isReady
+              ? '5 timed generations after 1 discarded warm-up, on '
+                  '${llm.backendLabel.toUpperCase()} — CPU/GPU/NPU '
+                  'utilisation averaged over the run.'
+              : 'Load a model on the Model tab, then benchmark generation '
+                  'here.',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (widget.telemetry.thermal.throttling)
+                _throttleWarning(widget.telemetry.thermal),
+              if (b.isRunning) ...[
+                LinearProgressIndicator(
+                  value: b.progress == 0 ? null : b.progress,
+                  backgroundColor: VaultColors.surfaceHigh,
+                  color: VaultColors.accent,
+                ),
+                const SizedBox(height: VaultSpace.sm),
+                Text(
+                  b.detail,
+                  style:
+                      const TextStyle(color: VaultColors.muted, fontSize: 12),
+                ),
+                const SizedBox(height: VaultSpace.md),
+                OutlinedButton.icon(
+                  onPressed: b.cancel,
+                  icon: const Icon(Icons.stop_rounded, size: 18),
+                  label: const Text('Cancel'),
+                ),
+              ] else
+                FilledButton.icon(
+                  onPressed: llm.isReady ? () => b.run() : null,
+                  icon: const Icon(Icons.psychology_rounded, size: 19),
+                  label: Text(b.report == null ? 'Run benchmark' : 'Run again'),
+                ),
+              if (b.report != null) ...[
+                const SizedBox(height: VaultSpace.lg),
+                _llmReportView(b.report!),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _llmReportView(LlmBenchmarkReport r) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          '${r.modelLabel} · loaded in ${r.loadMs} ms',
+          style: const TextStyle(color: VaultColors.faint, fontSize: 11),
+        ),
+        const SizedBox(height: VaultSpace.sm),
+        _statRow(
+          'Generation · ${r.backend.toUpperCase()}',
+          r.latency,
+          usage: r.computeUsage,
+        ),
+        if (r.meanTokensPerSecond != null) ...[
+          const SizedBox(height: VaultSpace.xs),
+          Text(
+            '${r.meanTokensPerSecond!.toStringAsFixed(1)} tokens/s mean · '
+            '${r.tokensPerSecond.length}/${r.latency.count} runs reported '
+            'a token count',
+            style: const TextStyle(color: VaultColors.faint, fontSize: 10.5),
+          ),
+        ],
+        if (r.error != null) ...[
+          const SizedBox(height: VaultSpace.sm),
+          Container(
+            padding: const EdgeInsets.all(VaultSpace.md),
+            decoration: BoxDecoration(
+              color: VaultColors.warn.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(VaultSpace.radiusSm),
+              border:
+                  Border.all(color: VaultColors.warn.withValues(alpha: 0.3)),
+            ),
+            child: Text(
+              r.error!,
+              style: const TextStyle(
+                color: VaultColors.muted,
+                fontSize: 11.5,
+                height: 1.5,
+              ),
+            ),
+          ),
+        ],
+        const SizedBox(height: VaultSpace.lg),
+        OutlinedButton.icon(
+          onPressed: () => _copyLlmReport(r),
+          icon: const Icon(Icons.copy_rounded, size: 17),
+          label: const Text('Copy report as JSON'),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _copyLlmReport(LlmBenchmarkReport r) async {
+    final json = const JsonEncoder.withIndent('  ').convert({
+      ...r.toJson(),
+      'device': widget.telemetry.snapshot(),
+    });
+    await Clipboard.setData(ClipboardData(text: json));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Reasoning benchmark report copied')),
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Combined report — the artefact the hardware/model split decision
+  // actually gets made from.
+  // ---------------------------------------------------------------------
+
+  Widget _combinedReportSection() {
+    return ListenableBuilder(
+      listenable: Listenable.merge([widget.benchmark, widget.llmBenchmark]),
+      builder: (context, _) {
+        final hasEmbedding = widget.benchmark.report != null;
+        final hasReasoning = widget.llmBenchmark.report != null;
+        return SectionCard(
+          title: 'Hardware split report',
+          subtitle: 'One export combining both benchmarks above — encoder '
+              'and reasoning model, each against the CPU/GPU/NPU numbers '
+              'measured while it ran.',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                '${hasEmbedding ? 'embedding ✓' : 'embedding — not run yet'}'
+                '   ·   '
+                '${hasReasoning ? 'reasoning ✓' : 'reasoning — not run yet'}',
+                style:
+                    const TextStyle(color: VaultColors.faint, fontSize: 11.5),
+              ),
+              const SizedBox(height: VaultSpace.md),
+              OutlinedButton.icon(
+                onPressed: (hasEmbedding || hasReasoning)
+                    ? _copyCombinedReport
+                    : null,
+                icon: const Icon(Icons.description_outlined, size: 18),
+                label: const Text('Copy combined report as JSON'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _copyCombinedReport() async {
+    final json = const JsonEncoder.withIndent('  ').convert({
+      'generated_at': DateTime.now().toIso8601String(),
+      'device': widget.telemetry.snapshot(),
+      if (widget.benchmark.report != null)
+        'embedding': widget.benchmark.report!.toJson(),
+      if (widget.llmBenchmark.report != null)
+        'reasoning': widget.llmBenchmark.report!.toJson(),
+    });
+    await Clipboard.setData(ClipboardData(text: json));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Combined hardware report copied')),
     );
   }
 }
@@ -703,41 +930,95 @@ class _SwatchPainter extends CustomPainter {
       old.color != color || old.dash != dash;
 }
 
-class _CompareToggle extends StatelessWidget {
-  final bool value;
-  final ValueChanged<bool> onChanged;
+/// Which additional encoder backends to build a throwaway interpreter for
+/// and time, on top of the live one the app already runs.
+///
+/// One checkbox per [EmbeddingBackend] rather than [BenchmarkRunner]'s old
+/// single "compare" toggle, because the four backends are not equally
+/// costly or equally likely to exist: GPU and NNAPI are the two candidates
+/// for "is there real accelerator here" (NNAPI is Android's route to the
+/// Hexagon NPU when a vendor driver actually implements it) and either can
+/// legitimately come back `unavailable` — see [BackendResult] — which is a
+/// finding, not a failure, and costs a fraction of a second to discover.
+/// Plain CPU and XNNPACK are slower to time honestly because the workload
+/// itself is slower on them, not because building the interpreter is.
+class _BackendSweepPicker extends StatelessWidget {
+  final Set<EmbeddingBackend> selected;
+  final ValueChanged<EmbeddingBackend> onChanged;
 
-  const _CompareToggle({required this.value, required this.onChanged});
+  const _BackendSweepPicker({required this.selected, required this.onChanged});
+
+  static const _options = [
+    (EmbeddingBackend.xnnpack, 'XNNPACK', 'accelerated CPU kernels'),
+    (EmbeddingBackend.cpu, 'CPU', 'unaccelerated baseline, slow'),
+    (EmbeddingBackend.gpu, 'GPU', 'Adreno, may refuse to build'),
+    (EmbeddingBackend.nnapi, 'NPU', 'via NNAPI, may refuse to build'),
+  ];
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: () => onChanged(!value),
-      borderRadius: BorderRadius.circular(VaultSpace.radiusSm),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: VaultSpace.xs),
-        child: Row(
-          children: [
-            Checkbox(
-              value: value,
-              onChanged: (v) => onChanged(v ?? false),
-              side: const BorderSide(color: VaultColors.borderStrong),
-            ),
-            const Expanded(
-              child: Text(
-                'Also sweep XNNPACK vs plain CPU — builds a separate '
-                'interpreter per backend. Adds roughly 30 s, because the '
-                'unaccelerated CPU path is genuinely that slow.',
-                style: TextStyle(
-                  color: VaultColors.faint,
-                  fontSize: 11.5,
-                  height: 1.45,
-                ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'ALSO SWEEP',
+          style: TextStyle(
+            color: VaultColors.muted,
+            fontSize: 10,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.8,
+          ),
+        ),
+        const SizedBox(height: VaultSpace.xs),
+        for (final (backend, label, detail) in _options)
+          InkWell(
+            onTap: () => onChanged(backend),
+            borderRadius: BorderRadius.circular(VaultSpace.radiusSm),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                children: [
+                  Checkbox(
+                    value: selected.contains(backend),
+                    onChanged: (_) => onChanged(backend),
+                    side: const BorderSide(color: VaultColors.borderStrong),
+                  ),
+                  Expanded(
+                    child: RichText(
+                      text: TextSpan(
+                        style: const TextStyle(
+                          color: VaultColors.faint,
+                          fontSize: 11.5,
+                          height: 1.4,
+                        ),
+                        children: [
+                          TextSpan(
+                            text: '$label  ',
+                            style: const TextStyle(
+                              color: VaultColors.foreground,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          TextSpan(text: detail),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
-          ],
-        ),
-      ),
+          ),
+        if (selected.isNotEmpty) ...[
+          const SizedBox(height: VaultSpace.xs),
+          Text(
+            '${selected.length} backend${selected.length == 1 ? '' : 's'} '
+            'selected — each builds its own interpreter and times it '
+            'separately, on top of the live run. A failed build is '
+            'reported, not hidden.',
+            style: const TextStyle(color: VaultColors.faint, fontSize: 10.5),
+          ),
+        ],
+      ],
     );
   }
 }

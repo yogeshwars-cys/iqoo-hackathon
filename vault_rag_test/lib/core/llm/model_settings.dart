@@ -28,7 +28,22 @@ class ModelSettings {
   /// and should stay fast.
   final bool autoLoad;
 
-  const ModelSettings({this.modelPath, this.autoLoad = false});
+  /// Same idea as [modelPath], for the llama.cpp/GGUF path — remembered
+  /// independently since the two engines are loaded independently (see
+  /// llama_runtime.dart's file header for why both exist).
+  final String? llamaModelPath;
+
+  /// Stored as the enum name ("cpu" | "gpu" | "npu"); resolved back to
+  /// [LlamaBackend] by the caller, which already owns that import — this
+  /// file stays free of a dependency on llama_runtime.dart for one string.
+  final String? llamaBackend;
+
+  const ModelSettings({
+    this.modelPath,
+    this.autoLoad = false,
+    this.llamaModelPath,
+    this.llamaBackend,
+  });
 
   static const empty = ModelSettings();
 
@@ -43,6 +58,8 @@ class ModelSettings {
       return ModelSettings(
         modelPath: map['model_path'] as String?,
         autoLoad: (map['auto_load'] as bool?) ?? false,
+        llamaModelPath: map['llama_model_path'] as String?,
+        llamaBackend: map['llama_backend'] as String?,
       );
     } catch (_) {
       return empty;
@@ -52,16 +69,28 @@ class ModelSettings {
   Future<void> save(String documentsPath) async {
     try {
       await _file(documentsPath).writeAsString(
-        jsonEncode({'model_path': modelPath, 'auto_load': autoLoad}),
+        jsonEncode({
+          'model_path': modelPath,
+          'auto_load': autoLoad,
+          'llama_model_path': llamaModelPath,
+          'llama_backend': llamaBackend,
+        }),
       );
     } catch (_) {
       // Non-fatal: the choice just will not survive this session.
     }
   }
 
-  ModelSettings copyWith({String? modelPath, bool? autoLoad}) =>
+  ModelSettings copyWith({
+    String? modelPath,
+    bool? autoLoad,
+    String? llamaModelPath,
+    String? llamaBackend,
+  }) =>
       ModelSettings(
         modelPath: modelPath ?? this.modelPath,
         autoLoad: autoLoad ?? this.autoLoad,
+        llamaModelPath: llamaModelPath ?? this.llamaModelPath,
+        llamaBackend: llamaBackend ?? this.llamaBackend,
       );
 }
