@@ -378,5 +378,165 @@ void main() {
       expect(probe.format, ModelFormat.unreadable);
       expect(probe.isUsable, isFalse);
     });
+
+    // Every exit from probeModel must carry the backend inference, not just
+    // the happy one. Three of the four used to take a defaulted `unknown`,
+    // which reads as "no backend token in the name" when the truth was "we
+    // never looked" — and `unknown` is the value that changes how the file
+    // is loaded and what the load page warns about.
+    test('reports the backend even when the file is missing', () async {
+      final probe = await probeModel('${dir.path}/gemma-2b-it-cpu-int4.task');
+      expect(probe.format, ModelFormat.unreadable);
+      expect(probe.suggestedBackend, SuggestedBackend.cpu);
+    });
+
+    test('reports the backend for a truncated file', () async {
+      final path = await write('gemma-2b-it-gpu-int4.bin', [1, 2, 3]);
+      final probe = await probeModel(path);
+      expect(probe.format, ModelFormat.unknown);
+      expect(probe.suggestedBackend, SuggestedBackend.gpu);
+    });
+
+    test('reports the backend for an unrecognised container', () async {
+      final path = await write(
+        'gemma-2b-it-cpu-int4.bin',
+        pad('<!DOCTYPE html'.codeUnits),
+      );
+      final probe = await probeModel(path);
+      expect(probe.format, ModelFormat.unknown);
+      expect(probe.suggestedBackend, SuggestedBackend.cpu);
+    });
+
+    test('serialises the backend alongside the format', () async {
+      final path = await write(
+        'gemma2-2b-it-cpu-int4.task',
+        pad([0x50, 0x4B, 0x03, 0x04]),
+      );
+      final json = (await probeModel(path)).toJson();
+      expect(json['suggested_backend'], 'cpu');
+      expect(json['format'], 'mediaPipeTask');
+    });
+
+    test('an unknown backend still produces a warning to show the user',
+        () async {
+      final named = await write('gemma.task', pad([0x50, 0x4B, 0x03, 0x04]));
+      expect((await probeModel(named)).backendWarning, isNotNull);
+
+      final tagged =
+          await write('gemma-cpu.task', pad([0x50, 0x4B, 0x03, 0x04]));
+      expect((await probeModel(tagged)).backendWarning, isNull);
+    });
+
+    test('no backend warning for a file that cannot be loaded anyway',
+        () async {
+      // The warning is about which backend to load on. For a GGUF there is
+      // no load to warn about, and stacking a second scary box under the
+      // "wrong format" one buries the message that actually matters.
+      final path = await write('mystery.gguf', pad('GGUF'.codeUnits));
+      expect((await probeModel(path)).backendWarning, isNull);
+    });
+  });
+
+  /// Filename-to-backend inference.
+  ///
+  /// This is the whole crash fix in one function: it decides whether a file
+  /// is allowed near the GPU backend, and getting it wrong in the permissive
+  /// direction is a SIGSEGV inside MediaPipe that no try/catch can intercept.
+  /// It is pure and string-only, so unlike the rest of the load path it can
+  /// be tested exhaustively on the host — which is the argument for it being
+  /// a separate function at all.
+  group('backend inference from filename', () {
+    // probeModel is the only public route to _inferBackend. A missing file
+    // still reports the inference, so no bytes need to be written to test it.
+    Future<SuggestedBackend> infer(String path) async =>
+        (await probeModel(path)).suggestedBackend;
+
+    test('the real MediaPipe release names', () async {
+      // Verbatim from the Kaggle / LiteRT Community listings. If the fix
+      // works on nothing else, it has to work on these three.
+      expect(await infer('gemma2-2b-it-cpu-int4.task'), SuggestedBackend.cpu);
+      expect(await infer('gemma-2b-it-gpu-int4.bin'), SuggestedBackend.gpu);
+      expect(
+        await infer('gemma-1.1-2b-it-cpu-int4.bin'),
+        SuggestedBackend.cpu,
+      );
+    });
+
+    test('dots in the version do not break the token match', () async {
+      // `gemma-1.1-2b` puts a `.` in the middle of the name. An earlier
+      // pattern anchored only on `-` and `_`, so a dot-separated backend
+      // token was silently demoted to unknown.
+      expect(await infer('gemma.cpu.int4.task'), SuggestedBackend.cpu);
+      expect(await infer('gemma.gpu.int4.bin'), SuggestedBackend.gpu);
+    });
+
+    test('a name with no backend token is unknown, not a guess', () async {
+      expect(await infer('model.task'), SuggestedBackend.unknown);
+      expect(await infer('gemma-2b-it-int4.bin'), SuggestedBackend.unknown);
+      expect(await infer('weights'), SuggestedBackend.unknown);
+    });
+
+    test('both tokens present resolves to CPU', () async {
+      // Genuinely ambiguous, so it resolves to the guess whose failure is
+      // recoverable. This is a safety property of the check order, not an
+      // accident — if someone reorders the two ifs, this test fails.
+      expect(await infer('gemma-cpu-gpu-int4.task'), SuggestedBackend.cpu);
+      expect(await infer('gemma-gpu-cpu-int4.task'), SuggestedBackend.cpu);
+    });
+
+    test('case is ignored', () async {
+      expect(await infer('GEMMA-2B-IT-CPU-INT4.TASK'), SuggestedBackend.cpu);
+      expect(await infer('Gemma-2b-It-Gpu-Int4.Bin'), SuggestedBackend.gpu);
+    });
+
+    test('underscores work as well as hyphens', () async {
+      expect(await infer('gemma_2b_it_cpu_int4.task'), SuggestedBackend.cpu);
+      expect(await infer('gemma_2b_it_gpu_int4.bin'), SuggestedBackend.gpu);
+    });
+
+    test('the token may start or end the name', () async {
+      expect(await infer('cpu-gemma-int4.task'), SuggestedBackend.cpu);
+      expect(await infer('gemma-int4-gpu.bin'), SuggestedBackend.gpu);
+      expect(await infer('gemma-int4-cpu'), SuggestedBackend.cpu);
+    });
+
+    test('a directory named cpu or gpu is not evidence', () async {
+      // Where someone filed the download says nothing about what the
+      // converter targeted, and people really do keep both builds under one
+      // models/gpu/ tree. Both separators, because the app reads paths that
+      // came from an Android file picker and from a Windows dev machine.
+      expect(await infer('/sdcard/models/cpu/gemma-int4.task'),
+          SuggestedBackend.unknown);
+      expect(await infer(r'C:\models\gpu\gemma-int4.bin'),
+          SuggestedBackend.unknown);
+      // ...but a token in the basename still wins over the directory.
+      expect(await infer('/sdcard/models/gpu/gemma-cpu-int4.task'),
+          SuggestedBackend.cpu);
+      expect(await infer(r'C:\models\cpu\gemma-gpu-int4.bin'),
+          SuggestedBackend.gpu);
+    });
+
+    test('full paths resolve the same on both separators', () async {
+      expect(
+        await infer('/storage/emulated/0/Download/gemma2-2b-it-cpu-int4.task'),
+        SuggestedBackend.cpu,
+      );
+      expect(
+        await infer(r'C:\Users\dev\Downloads\gemma-2b-it-gpu-int4.bin'),
+        SuggestedBackend.gpu,
+      );
+    });
+
+    test('substrings inside longer words are not backend tokens', () async {
+      // The false positives the word-boundary anchors exist to stop. A file
+      // called gpuinfo.bin must not be routed to the GPU backend on the
+      // strength of its first three letters.
+      expect(await infer('gpuinfo.bin'), SuggestedBackend.unknown);
+      expect(await infer('occupancy-model.task'), SuggestedBackend.unknown);
+      expect(await infer('mycpuinfo.bin'), SuggestedBackend.unknown);
+      expect(await infer('gpufast-2b.task'), SuggestedBackend.unknown);
+      expect(await infer('acpu.bin'), SuggestedBackend.unknown);
+      expect(await infer('cpuid-dump.task'), SuggestedBackend.unknown);
+    });
   });
 }

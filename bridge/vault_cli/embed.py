@@ -43,7 +43,47 @@ SKIP_DIRS = {
     ".gradle", ".idea", ".venv", "venv", "dist", ".mypy_cache", ".pytest_cache",
 }
 
-MAX_BYTES = 2 * 1024 * 1024
+# Sized to the WebSocket frame the bridge can actually deliver, not to what
+# feels like a reasonable document. Anything larger than roughly 1 MiB once
+# serialised makes the phone close the link with status 1009 ("message too
+# big"), which kills every other request in flight — so this used to be 2 MB
+# and a single fat file would drop the device off the bridge entirely.
+#
+# This is a cheap early check on the raw file, not the real limit: JSON
+# escaping inflates non-ASCII (an emoji is 4 bytes on disk and 12 in the
+# frame), so bridge_server does the authoritative check post-serialisation
+# and returns 413. A file under this cap can still be refused there.
+MAX_BYTES = 1024 * 1024
+
+
+def read_stdin_text() -> str | None:
+    """Reads standard input as UTF-8 regardless of the console code page.
+
+    sys.stdin on Windows decodes with the ANSI code page (cp1252 here), so
+    piping a UTF-8 file in turned "Café" into "CafÃ©" and emoji into four
+    bytes of mojibake — with no error, because cp1252 happily decodes almost
+    any byte. The corrupted text was then embedded on the phone, so the
+    damage was permanent and invisible until someone searched for it.
+    Reading the raw buffer and decoding explicitly is the only reliable fix.
+
+    Strict, and returns None on failure, to match read_text(): refusing
+    non-UTF-8 input is better than embedding replacement characters that
+    nobody will ever be able to search for.
+    """
+    raw = sys.stdin.buffer.read()
+    try:
+        # BOM-prefixed input is common from PowerShell redirection.
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return None
+
+    # Reading the raw buffer also bypasses the universal-newline translation
+    # that text mode did for free, and Path.read_text() still does it on the
+    # file path. Without this, piping a CRLF document in and passing the same
+    # document by name produce different chunk text on the device — and the
+    # verbatim spans in a capsule are checked by substring match, so that
+    # difference is not cosmetic.
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def collect(paths: Iterable[str], recursive: bool,
@@ -141,10 +181,26 @@ def main(argv: List[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.stdin:
-        content = sys.stdin.read()
+        content = read_stdin_text()
+        if content is None:
+            return fail("Standard input is not UTF-8 text.")
         if not content.strip():
             return fail("Nothing on standard input.")
+
         heading(f"vault-embed · {args.name} from stdin")
+
+        # --dry-run used to be ignored on this path entirely: the document
+        # was read, uploaded and embedded, and the phone's chunk count went
+        # up, while the flag promised nothing would be sent. For a tool whose
+        # whole premise is that data moves only when you say so, a --dry-run
+        # that transmits is the worst bug in the file.
+        if args.dry_run:
+            print(f"  would send {args.name} "
+                  f"({len(content.encode('utf-8'))} bytes from stdin)")
+            print(RULE)
+            print("  Dry run — nothing was sent.")
+            return 0
+
         ok, total = push(args.name, content)
         if ok:
             print(RULE)
@@ -175,12 +231,20 @@ def main(argv: List[str] | None = None) -> int:
 
     sent = 0
     failed = 0
+    skipped = 0
     total = 0
     started = time.perf_counter()
 
     for path in files:
         content = read_text(path)
-        if content is None or not content.strip():
+        if content is None:
+            skipped += 1          # read_text already said why
+            continue
+        if not content.strip():
+            # Used to be skipped in silence, so `vault-embed empty.txt`
+            # printed a header, a rule and nothing between them.
+            print(f"  {path.name}: skipped — empty")
+            skipped += 1
             continue
         ok, total_now = push(path.name, content)
         if ok:
@@ -191,10 +255,22 @@ def main(argv: List[str] | None = None) -> int:
 
     elapsed = time.perf_counter() - started
     print(RULE)
-    print(f"  {sent} embedded, {failed} failed, {elapsed:.1f}s total")
+    summary = f"  {sent} embedded, {failed} failed"
+    if skipped:
+        summary += f", {skipped} skipped"
+    print(f"{summary}, {elapsed:.1f}s total")
     if sent:
         print(f"  Vault now holds {total} chunks, all on the phone.")
-    return 1 if failed and not sent else 0
+
+    # The old rule was `failed and not sent`, which reported success for two
+    # cases a script very much wants to know about: a partial run where some
+    # uploads failed, and a run where every file was skipped as binary or
+    # empty — nothing embedded, nothing technically "failed", exit 0.
+    #
+    # Skips alone do not fail a directory walk; hitting a binary in a tree is
+    # routine. They do fail it when nothing got through at all, which is what
+    # `vault-embed some.png` is.
+    return 0 if sent and not failed else 1
 
 
 if __name__ == "__main__":

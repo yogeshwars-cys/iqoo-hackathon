@@ -89,6 +89,38 @@ extension ModelFormatInfo on ModelFormat {
       };
 }
 
+/// Which MediaPipe backend a model file was built for.
+///
+/// This is inferred from the filename, not from the binary format — the file
+/// magic only tells you the container (task/bin), not the quantisation target.
+/// MediaPipe CPU and GPU int4 weights are the same container format but
+/// incompatible tensor layouts. Loading a CPU model on the GPU backend causes
+/// a native SIGSEGV that no Kotlin or Dart try/catch can intercept.
+enum SuggestedBackend {
+  /// Filename contains "-cpu-" or "_cpu_" — load on CPU, never GPU.
+  cpu,
+
+  /// Filename contains "-gpu-" or "_gpu_" — try GPU first.
+  gpu,
+
+  /// Filename carries no backend token, so we do not know.
+  ///
+  /// This case is loaded CPU-first, not GPU-first. See the ordering argument
+  /// in [LlmRuntime.load]: the fallback loop only rescues *catchable* load
+  /// failures, and guessing GPU wrong is not one of them — it is a process
+  /// kill with no second attempt. The load page also says out loud that the
+  /// backend was guessed, and offers an explicit override.
+  unknown,
+}
+
+extension SuggestedBackendInfo on SuggestedBackend {
+  String get label => switch (this) {
+        SuggestedBackend.cpu => 'CPU',
+        SuggestedBackend.gpu => 'GPU',
+        SuggestedBackend.unknown => '?',
+      };
+}
+
 class ModelProbeResult {
   final String path;
   final ModelFormat format;
@@ -100,10 +132,27 @@ class ModelProbeResult {
 
   final String? error;
 
+  /// Backend inferred from the filename.
+  ///
+  /// MediaPipe publishes CPU and GPU variants of the same model with the
+  /// backend in the filename: `gemma2-2b-it-cpu-int4.task` vs
+  /// `gemma-2b-it-gpu-int4.bin`. This field drives backend selection in
+  /// [LlmRuntime.load] so a CPU model is never sent through the GPU path.
+  final SuggestedBackend suggestedBackend;
+
+  /// [suggestedBackend] is `required` rather than defaulted on purpose.
+  ///
+  /// It used to default to [SuggestedBackend.unknown], and three of the four
+  /// return sites in [probeModel] silently took that default — which is
+  /// exactly the value that means "we have no idea, be careful". A safety
+  /// field whose default is the uncertain case is a field that gets
+  /// forgotten. Making it required turns the next forgotten call site into a
+  /// compile error instead of a quietly wrong backend guess.
   const ModelProbeResult({
     required this.path,
     required this.format,
     required this.sizeBytes,
+    required this.suggestedBackend,
     this.magicHex,
     this.error,
   });
@@ -130,12 +179,31 @@ class ModelProbeResult {
     return null;
   }
 
+  /// Said before the Load button, not after a crash.
+  ///
+  /// When the filename carries no backend token there is nothing to infer
+  /// from, and the consequence of inferring wrong is a process kill rather
+  /// than an error message. The user is the only one here who might actually
+  /// know where the file came from, so ask them instead of guessing quietly.
+  String? get backendWarning {
+    if (!format.isSupported) return null;
+    if (suggestedBackend != SuggestedBackend.unknown) return null;
+    return 'This filename says nothing about which backend the weights were '
+        'built for. MediaPipe ships CPU and GPU builds in the same container, '
+        'and handing GPU-quantised weights to the CPU path — or the reverse — '
+        'kills the process outright rather than raising an error. CPU is '
+        'tried first because it is the recoverable guess. If you know which '
+        'build this is, say so below, or rename the file to include -cpu- '
+        'or -gpu-.';
+  }
+
   Map<String, dynamic> toJson() => {
         'path': path,
         'format': format.name,
         'label': format.label,
         'size_bytes': sizeBytes,
         'supported': format.isSupported,
+        'suggested_backend': suggestedBackend.name,
         if (magicHex != null) 'magic': magicHex,
         if (error != null) 'error': error,
       };
@@ -148,6 +216,15 @@ class ModelProbeResult {
 Future<ModelProbeResult> probeModel(String path) async {
   final file = File(path);
 
+  // Inferred once, up front, and attached to every result below.
+  //
+  // The backend guess is a pure function of the path string, so it is
+  // available even on the paths where the file could not be opened at all.
+  // Reporting it there is not academic: "unreadable, and by the way it was a
+  // CPU build" is what lets someone fix a permissions problem and load the
+  // file without a second round of guessing.
+  final backend = _inferBackend(path);
+
   int size;
   Uint8List head;
   try {
@@ -156,6 +233,7 @@ Future<ModelProbeResult> probeModel(String path) async {
         path: path,
         format: ModelFormat.unreadable,
         sizeBytes: 0,
+        suggestedBackend: backend,
         error: 'No file at this path.',
       );
     }
@@ -171,6 +249,7 @@ Future<ModelProbeResult> probeModel(String path) async {
       path: path,
       format: ModelFormat.unreadable,
       sizeBytes: 0,
+      suggestedBackend: backend,
       error: '$e',
     );
   }
@@ -181,6 +260,7 @@ Future<ModelProbeResult> probeModel(String path) async {
       format: ModelFormat.unknown,
       sizeBytes: size,
       magicHex: _hex(head),
+      suggestedBackend: backend,
       error: 'File is only ${head.length} bytes.',
     );
   }
@@ -191,7 +271,41 @@ Future<ModelProbeResult> probeModel(String path) async {
     format: format,
     sizeBytes: size,
     magicHex: format == ModelFormat.unknown ? _hex(head) : null,
+    suggestedBackend: backend,
   );
+}
+
+/// Extracts the intended backend from the filename.
+///
+/// MediaPipe's official Gemma releases embed the backend in the filename:
+///   gemma2-2b-it-cpu-int4.task  →  CPU
+///   gemma-2b-it-gpu-int4.bin   →  GPU
+///
+/// The match is against the lowercased basename only, using a word-boundary
+/// pattern so an incidental "gpu" inside "gpuinfo" does not trigger a false
+/// positive.
+///
+/// BASENAME ONLY, DELIBERATELY. A directory called `cpu/` says where someone
+/// filed the download, not what the converter targeted, and people do keep
+/// both builds under one `models/gpu/` tree. Directory names are evidence
+/// about the human, not about the tensor layout, so they are ignored.
+///
+/// CPU WINS WHEN BOTH TOKENS APPEAR. That ordering is a safety property, not
+/// an accident of which `if` came first: a name like `gemma-cpu-gpu-int4` is
+/// genuinely ambiguous, and the ambiguous case should resolve to the guess
+/// whose failure mode is recoverable. Do not reorder these two checks.
+SuggestedBackend _inferBackend(String path) {
+  final name = path.split(RegExp(r'[\\/]')).last.toLowerCase();
+
+  // Delimiters are symmetric on both sides — `-`, `_` and `.` all separate
+  // fields in the names these files actually ship under, so `gemma.cpu.int4`
+  // must read the same as `gemma-cpu-int4`. The leading class used to omit
+  // `.`, which silently demoted dot-separated names to `unknown`.
+  final cpuPat = RegExp(r'(?:^|[-_.])cpu(?:[-_.]|$)');
+  final gpuPat = RegExp(r'(?:^|[-_.])gpu(?:[-_.]|$)');
+  if (cpuPat.hasMatch(name)) return SuggestedBackend.cpu;
+  if (gpuPat.hasMatch(name)) return SuggestedBackend.gpu;
+  return SuggestedBackend.unknown;
 }
 
 ModelFormat _identify(Uint8List head) {

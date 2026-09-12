@@ -18,6 +18,7 @@ library;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
+import '../core/llm/llama_runtime.dart';
 import '../core/llm/llm_runtime.dart';
 import '../core/llm/model_probe.dart';
 import '../core/llm/capsule_prompt.dart';
@@ -26,16 +27,28 @@ import 'widgets/common.dart';
 
 class ModelPage extends StatefulWidget {
   final LlmRuntime llm;
+  final LlamaRuntime llama;
 
   /// Persists the chosen path so it survives a relaunch.
   final Future<void> Function(String path) onRemember;
   final String? rememberedPath;
 
+  /// Same idea, for the llama.cpp card — path and backend remembered
+  /// together since loading one without the other is not a valid state to
+  /// restore into.
+  final Future<void> Function(String path, LlamaBackend backend) onRememberLlama;
+  final String? rememberedLlamaPath;
+  final LlamaBackend? rememberedLlamaBackend;
+
   const ModelPage({
     super.key,
     required this.llm,
+    required this.llama,
     required this.onRemember,
     required this.rememberedPath,
+    required this.onRememberLlama,
+    required this.rememberedLlamaPath,
+    required this.rememberedLlamaBackend,
   });
 
   @override
@@ -47,16 +60,36 @@ class _ModelPageState extends State<ModelPage> {
   ModelProbeResult? _inspection;
   bool _working = false;
 
+  /// User's explicit answer to "which build is this file?", when they gave
+  /// one. Null means "use the filename inference", which is the right default
+  /// whenever the filename actually says something. Only offered, and only
+  /// meaningful, when the inference came back [SuggestedBackend.unknown].
+  LlmBackend? _backendOverride;
+
+  // --- llama.cpp (GGUF) card state ---------------------------------------
+  final _llamaPathController = TextEditingController();
+  LlamaBackend _llamaBackend = LlamaBackend.cpu;
+  final _llamaPromptController = TextEditingController();
+  bool _llamaWorking = false;
+  String? _llamaGenerationResult;
+
   @override
   void initState() {
     super.initState();
     final remembered = widget.rememberedPath;
     if (remembered != null) _pathController.text = remembered;
+
+    final rememberedLlama = widget.rememberedLlamaPath;
+    if (rememberedLlama != null) _llamaPathController.text = rememberedLlama;
+    final rememberedBackend = widget.rememberedLlamaBackend;
+    if (rememberedBackend != null) _llamaBackend = rememberedBackend;
   }
 
   @override
   void dispose() {
     _pathController.dispose();
+    _llamaPathController.dispose();
+    _llamaPromptController.dispose();
     super.dispose();
   }
 
@@ -78,6 +111,11 @@ class _ModelPageState extends State<ModelPage> {
     setState(() {
       _inspection = result;
       _working = false;
+      // A new file invalidates the previous answer. Carrying an override
+      // from the last inspection onto a different model is exactly the kind
+      // of stale-state bug that produces the crash this page is guarding
+      // against, so it is dropped on every inspect.
+      _backendOverride = null;
     });
   }
 
@@ -86,7 +124,7 @@ class _ModelPageState extends State<ModelPage> {
     if (path.isEmpty) return;
     setState(() => _working = true);
 
-    final ok = await widget.llm.load(path);
+    final ok = await widget.llm.load(path, backendOverride: _backendOverride);
     if (ok) await widget.onRemember(path);
     if (!mounted) return;
     setState(() => _working = false);
@@ -103,7 +141,7 @@ class _ModelPageState extends State<ModelPage> {
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: widget.llm,
+      listenable: Listenable.merge([widget.llm, widget.llama]),
       builder: (context, _) => ListView(
         padding: const EdgeInsets.fromLTRB(
           VaultSpace.lg,
@@ -120,72 +158,91 @@ class _ModelPageState extends State<ModelPage> {
             _inspectionCard(_inspection!),
           ],
           const SizedBox(height: VaultSpace.md),
+          _llamaCard(),
+          const SizedBox(height: VaultSpace.md),
           _roleCard(),
         ],
       ),
     );
   }
 
+  /// The one banner a judge — or you, five minutes ago — actually reads
+  /// first, so it has to answer the question honestly: is there a model
+  /// active right now, and which one. Wrong in the same direction as the
+  /// bug it replaces would be worse than saying nothing: this used to
+  /// report only [LlmRuntime]'s state, so a loaded llama.cpp model sat next
+  /// to a banner still saying "NOT LOADED — generation does not work",
+  /// directly contradicting the card two scrolls down that said LOADED in
+  /// green.
+  ///
+  /// The active-engine rule mirrors [VaultEngine.ask] exactly: llama.cpp
+  /// wins when ready, MediaPipe/Gemma otherwise. Two engines can be loaded
+  /// at once — nothing stops that — so both get a status line in the body,
+  /// but only one of them is what "Ask on device" actually reasons with,
+  /// and the banner says which.
   Widget _statusCard() {
     final llm = widget.llm;
-    final (label, color) = switch (llm.state) {
-      LlmState.ready => ('LOADED', VaultColors.accent),
-      LlmState.loading => ('LOADING', VaultColors.warn),
-      LlmState.probing => ('INSPECTING', VaultColors.warn),
-      LlmState.failed => ('FAILED', VaultColors.danger),
-      LlmState.unloaded => ('NOT LOADED', VaultColors.faint),
+    final llama = widget.llama;
+    final usingLlama = llama.isReady;
+    final anyReady = llm.isReady || llama.isReady;
+    final anyLoading = llm.state == LlmState.loading ||
+        llm.state == LlmState.probing ||
+        llama.state == LlamaState.loading;
+    final anyFailed =
+        llm.state == LlmState.failed || llama.state == LlamaState.failed;
+
+    final (label, color) = switch (true) {
+      _ when anyReady => ('LOADED', VaultColors.accent),
+      _ when anyLoading => ('LOADING', VaultColors.warn),
+      _ when anyFailed => ('FAILED', VaultColors.danger),
+      _ => ('NOT LOADED', VaultColors.faint),
     };
+
+    final subtitle = usingLlama
+        ? '${llama.modelLabel} on llama.cpp/${llama.backend?.label ?? "?"} '
+            '— active for "Ask on device"'
+        : llm.isReady
+            ? '${llm.modelLabel} on ${llm.backendLabel.toUpperCase()} '
+                '— active for "Ask on device"'
+            : 'Retrieval works without this. Generation does not.';
 
     return SectionCard(
       title: 'Reasoning model',
-      subtitle: llm.isReady
-          ? '${llm.modelLabel} on ${llm.backendLabel.toUpperCase()}'
-          : 'Retrieval works without this. Generation does not.',
+      subtitle: subtitle,
       trailing: StatusPill(
         label: label,
         color: color,
-        pulsing: llm.isGenerating || llm.state == LlmState.loading,
+        pulsing: llm.isGenerating || llama.isGenerating || anyLoading,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           if (llm.isReady) ...[
-            Row(
-              children: [
-                Expanded(
-                  child: MetricTile(
-                    label: 'BACKEND',
-                    value: llm.backendLabel.toUpperCase(),
-                    accent: VaultColors.accent,
-                  ),
-                ),
-                const SizedBox(width: VaultSpace.sm),
-                Expanded(
-                  child: MetricTile(
-                    label: 'LOAD',
-                    value: '${llm.loadMs}',
-                    unit: 'ms',
-                  ),
-                ),
-                const SizedBox(width: VaultSpace.sm),
-                Expanded(
-                  child: MetricTile(
-                    label: 'QUEUE',
-                    value: '${llm.queueDepth}',
-                    accent: llm.queueDepth > 0 ? VaultColors.warn : null,
-                  ),
-                ),
-              ],
+            _engineStatusRow(
+              label: llm.isReady && usingLlama
+                  ? 'MediaPipe (loaded, not active)'
+                  : 'MediaPipe',
+              backend: llm.backendLabel.toUpperCase(),
+              loadMs: llm.loadMs,
+              queueDepth: llm.queueDepth,
+              onUnload: _working ? null : widget.llm.unload,
+              dimmed: usingLlama,
             ),
-            const SizedBox(height: VaultSpace.md),
-            OutlinedButton.icon(
-              onPressed: _working ? null : widget.llm.unload,
-              icon: const Icon(Icons.eject_rounded, size: 18),
-              label: const Text('Unload'),
-            ),
+            const SizedBox(height: VaultSpace.sm),
           ] else if (llm.state == LlmState.loading)
-            const _LoadingBlock()
-          else
+            const _LoadingBlock(),
+          if (llama.isReady) ...[
+            _engineStatusRow(
+              label: 'llama.cpp',
+              backend: llama.backend?.label ?? '?',
+              loadMs: llama.loadMs,
+              queueDepth: llama.queueDepth,
+              onUnload: () => widget.llama.unload(),
+              dimmed: false,
+            ),
+          ] else if (llama.state == LlamaState.loading)
+            const _LoadingBlock(),
+          if (!anyReady && !anyLoading)
             const Text(
               'No model loaded. Queries still work — they return a capsule '
               'built from retrieval alone, with the answer quoted verbatim '
@@ -198,24 +255,70 @@ class _ModelPageState extends State<ModelPage> {
             ),
           if (llm.error != null) ...[
             const SizedBox(height: VaultSpace.md),
-            Container(
-              padding: const EdgeInsets.all(VaultSpace.md),
-              decoration: BoxDecoration(
-                color: VaultColors.danger.withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(VaultSpace.radiusSm),
-                border:
-                    Border.all(color: VaultColors.danger.withValues(alpha: 0.3)),
-              ),
-              child: Text(
-                llm.error!,
-                style: const TextStyle(
-                  color: VaultColors.muted,
-                  fontSize: 11.5,
-                  height: 1.5,
+            _note(llm.error!, VaultColors.danger),
+          ],
+          if (llama.error != null) ...[
+            const SizedBox(height: VaultSpace.md),
+            _note(llama.error!, VaultColors.danger),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _engineStatusRow({
+    required String label,
+    required String backend,
+    required int loadMs,
+    required int queueDepth,
+    required VoidCallback? onUnload,
+    required bool dimmed,
+  }) {
+    final opacity = dimmed ? 0.55 : 1.0;
+    return Opacity(
+      opacity: opacity,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              color: VaultColors.muted,
+              fontSize: 10.5,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.6,
+            ),
+          ),
+          const SizedBox(height: VaultSpace.xs),
+          Row(
+            children: [
+              Expanded(
+                child: MetricTile(
+                  label: 'BACKEND',
+                  value: backend.toUpperCase(),
+                  accent: VaultColors.accent,
                 ),
               ),
-            ),
-          ],
+              const SizedBox(width: VaultSpace.sm),
+              Expanded(
+                child: MetricTile(label: 'LOAD', value: '$loadMs', unit: 'ms'),
+              ),
+              const SizedBox(width: VaultSpace.sm),
+              Expanded(
+                child: MetricTile(
+                  label: 'QUEUE',
+                  value: '$queueDepth',
+                  accent: queueDepth > 0 ? VaultColors.warn : null,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: VaultSpace.sm),
+          OutlinedButton.icon(
+            onPressed: onUnload,
+            icon: const Icon(Icons.eject_rounded, size: 18),
+            label: const Text('Unload'),
+          ),
         ],
       ),
     );
@@ -298,11 +401,35 @@ class _ModelPageState extends State<ModelPage> {
                   unavailable: probe.sizeBytes == 0,
                 ),
               ),
+              const SizedBox(width: VaultSpace.sm),
+              // Shown before the Load button, not in the success snackbar
+              // afterwards. Which backend the weights were built for is the
+              // one fact on this card that decides whether tapping Load
+              // returns or kills the process, so it belongs next to the
+              // format, at the moment the decision is still reversible.
+              Expanded(
+                child: MetricTile(
+                  label: 'BUILT FOR',
+                  value: _plannedBackend(probe).label,
+                  // Amber, not the greyed-out `unavailable` treatment. An
+                  // unknown backend is not a lane the device declined to
+                  // report — it is the one unresolved risk on the card, and
+                  // it should look like an alert rather than an absence.
+                  accent: _unsure(probe) ? VaultColors.warn : VaultColors.accent,
+                  footnote: _backendSource(probe),
+                ),
+              ),
             ],
           ),
           if (probe.sizeWarning != null) ...[
             const SizedBox(height: VaultSpace.md),
             _note(probe.sizeWarning!, VaultColors.warn),
+          ],
+          if (probe.backendWarning != null) ...[
+            const SizedBox(height: VaultSpace.md),
+            _note(probe.backendWarning!, VaultColors.warn),
+            const SizedBox(height: VaultSpace.md),
+            _backendOverridePicker(),
           ],
           if (probe.magicHex != null) ...[
             const SizedBox(height: VaultSpace.md),
@@ -334,10 +461,16 @@ class _ModelPageState extends State<ModelPage> {
               label: Text(_working ? 'Working…' : 'Load into memory'),
             ),
             const SizedBox(height: VaultSpace.sm),
-            const Text(
-              'Tries the GPU backend first and falls back to CPU. Expect '
-              'tens of seconds and a large jump in memory use.',
-              style: TextStyle(
+            Text(
+              // Derived, never hardcoded. This line used to read "Tries the
+              // GPU backend first and falls back to CPU", which stopped being
+              // true the moment the filename started deciding the order — and
+              // a caption that confidently describes the opposite of what the
+              // button does is worse than no caption on a screen whose whole
+              // job is to stop a crash.
+              '${_planDescription(probe)} Expect tens of seconds and a large '
+              'jump in memory use.',
+              style: const TextStyle(
                 color: VaultColors.faint,
                 fontSize: 11,
                 height: 1.45,
@@ -346,6 +479,122 @@ class _ModelPageState extends State<ModelPage> {
           ],
         ],
       ),
+    );
+  }
+
+  /// True when nothing — not the filename, not the user — has said which
+  /// build this is, so the backend about to be used is a guess.
+  bool _unsure(ModelProbeResult probe) =>
+      _backendOverride == null &&
+      probe.suggestedBackend == SuggestedBackend.unknown;
+
+  /// What the BUILT FOR tile shows: the user's answer if they gave one,
+  /// otherwise whatever the filename implied.
+  SuggestedBackend _plannedBackend(ModelProbeResult probe) =>
+      switch (_backendOverride) {
+        LlmBackend.cpu => SuggestedBackend.cpu,
+        LlmBackend.gpu => SuggestedBackend.gpu,
+        null => probe.suggestedBackend,
+      };
+
+  /// Where that value came from. Provenance matters more than the value
+  /// here — "you told us" and "we read it off the filename" warrant very
+  /// different levels of trust, and the tile should not flatten them.
+  String _backendSource(ModelProbeResult probe) {
+    if (_backendOverride != null) return 'you chose this';
+    return switch (probe.suggestedBackend) {
+      SuggestedBackend.unknown => 'not stated in filename',
+      _ => 'read from filename',
+    };
+  }
+
+  String _planDescription(ModelProbeResult probe) {
+    if (_backendOverride != null) {
+      return 'Loads on ${_backendOverride!.name.toUpperCase()} only, because '
+          'you selected it — no fallback to the other backend.';
+    }
+    return switch (probe.suggestedBackend) {
+      SuggestedBackend.cpu => 'Loads on CPU only. The filename says these are '
+          'CPU weights, and the GPU backend is never offered them.',
+      SuggestedBackend.gpu =>
+        'Tries GPU first and falls back to CPU if GPU initialisation fails.',
+      SuggestedBackend.unknown =>
+        'Tries CPU first, then GPU — CPU first because it is the guess you '
+            'can recover from.',
+    };
+  }
+
+  /// Two buttons rather than a dialog.
+  ///
+  /// The page's whole shape is progressive disclosure — pick, inspect, load —
+  /// and a modal asking "CPU or GPU?" would ask for the answer at the worst
+  /// moment, after the user has committed to loading and while they are
+  /// waiting. Asking inline, on the card that just told them the filename is
+  /// ambiguous, puts the question next to the evidence for it.
+  Widget _backendOverridePicker() {
+    Widget option(LlmBackend backend, String detail) {
+      final selected = _backendOverride == backend;
+      return Expanded(
+        child: OutlinedButton(
+          onPressed: _working
+              ? null
+              // Tapping the selected option clears it, so there is a way back
+              // to "I don't know" without re-inspecting the file.
+              : () => setState(
+                    () => _backendOverride = selected ? null : backend,
+                  ),
+          style: OutlinedButton.styleFrom(
+            foregroundColor:
+                selected ? VaultColors.accent : VaultColors.muted,
+            side: BorderSide(
+              color: selected ? VaultColors.accent : VaultColors.border,
+            ),
+            backgroundColor: selected
+                ? VaultColors.accent.withValues(alpha: 0.1)
+                : null,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                backend.name.toUpperCase(),
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              Text(
+                detail,
+                style: const TextStyle(fontSize: 9.5, height: 1.3),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text(
+          'IF YOU KNOW WHICH BUILD THIS IS',
+          style: TextStyle(
+            color: VaultColors.muted,
+            fontSize: 10,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.8,
+          ),
+        ),
+        const SizedBox(height: VaultSpace.sm),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            option(LlmBackend.cpu, 'slower, safer'),
+            const SizedBox(width: VaultSpace.sm),
+            option(LlmBackend.gpu, 'faster, riskier'),
+          ],
+        ),
+      ],
     );
   }
 
@@ -366,6 +615,186 @@ class _ModelPageState extends State<ModelPage> {
         ),
       ),
     );
+  }
+
+  /// The GGUF / llama.cpp path from the PocketRAG Snapdragon plan, alongside
+  /// the MediaPipe/Gemma card above rather than replacing it — see
+  /// llama_runtime.dart's file header for why the two coexist. Deliberately
+  /// no backend-mismatch warning here the way [_inspectionCard] has one:
+  /// llama.cpp resolves "cpu"/"gpu"/"npu" to a specific device by name on
+  /// the native side, so an unavailable device is a clean load error, never
+  /// the silent-crash risk a MediaPipe backend guess is.
+  Widget _llamaCard() {
+    return ListenableBuilder(
+      listenable: widget.llama,
+      builder: (context, _) {
+        final llama = widget.llama;
+        final (label, color) = switch (llama.state) {
+          LlamaState.ready => ('LOADED', VaultColors.accent),
+          LlamaState.loading => ('LOADING', VaultColors.warn),
+          LlamaState.failed => ('FAILED', VaultColors.danger),
+          LlamaState.unloaded => ('NOT LOADED', VaultColors.faint),
+        };
+
+        return SectionCard(
+          title: 'Reasoning model — llama.cpp (GGUF)',
+          subtitle: 'Qwen3 / SmolLM2 / GGUF Gemma, CPU / GPU / NPU — '
+              'independent of the MediaPipe model above.',
+          trailing: StatusPill(
+            label: label,
+            color: color,
+            pulsing: llama.state == LlamaState.loading || llama.isGenerating,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextField(
+                controller: _llamaPathController,
+                enabled: !_llamaWorking,
+                autocorrect: false,
+                style: VaultText.mono.copyWith(
+                  color: VaultColors.foreground,
+                  fontSize: 12,
+                ),
+                maxLines: 2,
+                minLines: 1,
+                decoration: const InputDecoration(
+                  labelText: 'GGUF path',
+                  hintText: '/storage/emulated/0/Download/'
+                      'qwen3-1.7b-q4_k_m.gguf',
+                ),
+              ),
+              const SizedBox(height: VaultSpace.sm),
+              OutlinedButton.icon(
+                onPressed: _llamaWorking ? null : _llamaBrowse,
+                icon: const Icon(Icons.folder_open_rounded, size: 18),
+                label: const Text('Browse'),
+              ),
+              const SizedBox(height: VaultSpace.md),
+              Row(
+                children: [
+                  for (final backend in LlamaBackend.values) ...[
+                    if (backend != LlamaBackend.values.first)
+                      const SizedBox(width: VaultSpace.sm),
+                    Expanded(child: _llamaBackendButton(backend)),
+                  ],
+                ],
+              ),
+              const SizedBox(height: VaultSpace.md),
+              FilledButton.icon(
+                onPressed: _llamaWorking ? null : _llamaLoad,
+                icon: const Icon(Icons.memory_rounded, size: 19),
+                label: Text(_llamaWorking ? 'Working…' : 'Load into memory'),
+              ),
+              if (llama.error != null) ...[
+                const SizedBox(height: VaultSpace.md),
+                _note(llama.error!, VaultColors.danger),
+              ],
+              if (llama.isReady) ...[
+                const SizedBox(height: VaultSpace.lg),
+                const Divider(height: 1, color: VaultColors.border),
+                const SizedBox(height: VaultSpace.md),
+                TextField(
+                  controller: _llamaPromptController,
+                  enabled: !_llamaWorking,
+                  maxLines: 3,
+                  minLines: 1,
+                  decoration: const InputDecoration(
+                    labelText: 'Test prompt',
+                    hintText: 'Ask it something, no retrieval involved — '
+                        'this is a raw generation smoke test.',
+                  ),
+                ),
+                const SizedBox(height: VaultSpace.sm),
+                OutlinedButton.icon(
+                  onPressed: _llamaWorking ? null : _llamaGenerate,
+                  icon: const Icon(Icons.bolt_rounded, size: 18),
+                  label: const Text('Generate'),
+                ),
+                if (_llamaGenerationResult != null) ...[
+                  const SizedBox(height: VaultSpace.md),
+                  CodeBlock(_llamaGenerationResult!),
+                ],
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _llamaBackendButton(LlamaBackend backend) {
+    final selected = _llamaBackend == backend;
+    return OutlinedButton(
+      onPressed: _llamaWorking ? null : () => setState(() => _llamaBackend = backend),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: selected ? VaultColors.accent : VaultColors.muted,
+        side: BorderSide(
+          color: selected ? VaultColors.accent : VaultColors.border,
+        ),
+        backgroundColor:
+            selected ? VaultColors.accent.withValues(alpha: 0.1) : null,
+      ),
+      child: Text(
+        backend.label,
+        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+      ),
+    );
+  }
+
+  Future<void> _llamaBrowse() async {
+    final files = await FilePicker.pickFiles();
+    if (files.isEmpty || !mounted) return;
+    final path = files.first.path;
+    if (path == null) return;
+    setState(() => _llamaPathController.text = path);
+  }
+
+  Future<void> _llamaLoad() async {
+    final path = _llamaPathController.text.trim();
+    if (path.isEmpty) return;
+    setState(() {
+      _llamaWorking = true;
+      _llamaGenerationResult = null;
+    });
+
+    final ok = await widget.llama.load(path, backend: _llamaBackend);
+    if (ok) await widget.onRememberLlama(path, _llamaBackend);
+    if (!mounted) return;
+    setState(() => _llamaWorking = false);
+
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(ok
+          ? 'Loaded on ${widget.llama.backend?.label} in '
+              '${widget.llama.loadMs} ms'
+          : widget.llama.error ?? 'Load failed'),
+      duration: const Duration(seconds: 6),
+    ));
+  }
+
+  Future<void> _llamaGenerate() async {
+    final prompt = _llamaPromptController.text.trim();
+    if (prompt.isEmpty) return;
+    setState(() {
+      _llamaWorking = true;
+      _llamaGenerationResult = null;
+    });
+
+    try {
+      final result = await widget.llama.generate(prompt);
+      if (!mounted) return;
+      setState(() {
+        _llamaGenerationResult = '${result.text}\n\n'
+            '— ${result.tokens} tokens, ${result.prefillMs} ms prefill, '
+            '${result.decodeMs} ms decode'
+            '${result.tokensPerSecond != null ? ', ${result.tokensPerSecond!.toStringAsFixed(1)} tok/s' : ''}';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _llamaGenerationResult = 'Generation failed: $e');
+    } finally {
+      if (mounted) setState(() => _llamaWorking = false);
+    }
   }
 
   Widget _roleCard() {

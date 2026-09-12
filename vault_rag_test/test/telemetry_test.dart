@@ -10,9 +10,16 @@ library;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vault_rag_test/telemetry/benchmark_runner.dart';
 import 'package:vault_rag_test/telemetry/compute_telemetry.dart';
+import 'package:vault_rag_test/telemetry/device_info.dart';
 import 'package:vault_rag_test/telemetry/telemetry_sources.dart';
 
 void main() {
+  // ComputeTelemetry.start() talks to the `vault/device` method channel.
+  // There is no Android on the other end here, so the calls fail and fall
+  // back to DeviceFacts.unknown — but they still complete asynchronously,
+  // which is the behaviour the disposal test below depends on.
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('InferenceMeter', () {
     test('drain returns only what accumulated since the last call', () {
       final meter = InferenceMeter();
@@ -144,12 +151,129 @@ void main() {
     });
   });
 
+  group('summarizeUsage', () {
+    TelemetrySample sampleAt(
+      int seconds, {
+      Probe? cpu,
+      Probe? gpu,
+      Probe? npu,
+    }) =>
+        TelemetrySample(
+          at: DateTime(2026, 1, 1).add(Duration(seconds: seconds)),
+          cpu: cpu ?? const Probe(0, ProbeKind.measured),
+          gpu: gpu ?? const Probe.unavailable(),
+          npu: npu ?? const Probe.unavailable(),
+          duty: const Probe(0, ProbeKind.derived),
+          inferences: 0,
+        );
+
+    test('averages only the readings a lane actually reported', () {
+      final samples = [
+        sampleAt(0, gpu: const Probe(20, ProbeKind.measured)),
+        sampleAt(1, gpu: const Probe.unavailable()),
+        sampleAt(2, gpu: const Probe(40, ProbeKind.measured)),
+      ];
+      final usage = summarizeUsage(samples);
+
+      // (20 + 40) / 2, not / 3 — the middle gap must not drag the average
+      // toward zero, which is exactly the "flat line reads as idle" mistake
+      // telemetry_sources.dart exists to avoid.
+      expect(usage.averagePercent[ComputeLane.gpu], 30.0);
+      expect(usage.sampleCount, 3);
+    });
+
+    test('a lane never available in the window averages to null, not zero',
+        () {
+      final samples = [sampleAt(0), sampleAt(1)];
+      final usage = summarizeUsage(samples);
+
+      expect(usage.averagePercent[ComputeLane.npu], isNull);
+      expect(usage.kind[ComputeLane.npu], ProbeKind.unavailable);
+    });
+
+    test('an empty window degrades to nulls rather than throwing', () {
+      final usage = summarizeUsage(const []);
+      expect(usage.sampleCount, 0);
+      for (final lane in ComputeLane.values) {
+        expect(usage.averagePercent[lane], isNull);
+      }
+    });
+
+    test('carries the thermal state through to JSON when known', () {
+      const thermal =
+          ThermalState(status: 1, label: 'light', throttling: false);
+      final usage = summarizeUsage(
+        [sampleAt(0, gpu: const Probe(10, ProbeKind.measured))],
+        thermal: thermal,
+      );
+      expect(usage.toJson()['thermal'], thermal.toJson());
+    });
+
+    test('omits thermal from JSON when unknown', () {
+      final usage = summarizeUsage(const [], thermal: ThermalState.unknown);
+      expect(usage.toJson().containsKey('thermal'), isFalse);
+    });
+  });
+
   group('ComputeLane', () {
     test('every lane has a label and a description', () {
       for (final lane in ComputeLane.values) {
         expect(lane.label, isNotEmpty);
         expect(lane.description, isNotEmpty);
       }
+    });
+  });
+
+  group('ComputeTelemetry lifecycle', () {
+    test('a platform round-trip landing after dispose does not notify',
+        () async {
+      // start() kicks off _loadPlatformFacts(), which awaits two method
+      // channel calls and then notifies. AppLifecycleListener disposal, a
+      // hot restart, or simply backgrounding during a cold start can put
+      // dispose() inside that window.
+      final telemetry = ComputeTelemetry(
+        meter: InferenceMeter(),
+        // Long enough that no tick can fire; this is about the async load,
+        // not the sampler.
+        interval: const Duration(hours: 1),
+      );
+      telemetry.start();
+      telemetry.dispose();
+
+      // The assertion is the absence of an uncaught async error: notifying a
+      // disposed ChangeNotifier throws inside the unawaited future that
+      // start() left running, and package:test fails the test for it.
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    });
+
+    test('work done while the sampler was stopped is not dumped into the '
+        'first window after it restarts', () async {
+      // The lifecycle listener stops sampling in the background, but the
+      // bridge keeps serving the desktop while the app is backgrounded —
+      // that is the point of it. The meter counts that work with nobody
+      // draining it.
+      final meter = InferenceMeter();
+      final telemetry = ComputeTelemetry(
+        meter: meter,
+        interval: const Duration(milliseconds: 20),
+      );
+
+      telemetry.start();
+      telemetry.stop(); // onPause
+
+      meter.record(30 * 1000 * 1000); // 30 s of bridge-driven inference
+
+      telemetry.start(); // onResume
+      await Future<void>.delayed(const Duration(milliseconds: 90));
+      telemetry.dispose();
+
+      expect(telemetry.history, isNotEmpty);
+      final first = telemetry.history.first;
+      // Before the fix this read 100 % duty (30 s of work divided by a 20 ms
+      // window, clamped) with every background inference stamped onto one
+      // sample — a spike that never happened, in the middle of a benchmark.
+      expect(first.duty.value, lessThan(5.0));
+      expect(first.inferences, 0);
     });
   });
 }

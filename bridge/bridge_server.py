@@ -59,6 +59,26 @@ INDEX_TIMEOUT_SECONDS = 180.0
 # that fits retrieval would abort every single capsule.
 ASK_TIMEOUT_SECONDS = 300.0
 
+# The largest frame we will put on the wire toward the phone.
+#
+# This is not our limit, it is the receiver's. 1 MiB is the default
+# `max_size` in the `websockets` library and the same order as OkHttp's and
+# dart:io's defaults, and a client that hits it does not just drop the frame
+# — it closes the connection with status 1009, which strands every other
+# request in flight and forces the phone app to reconnect. Losing the whole
+# link because one document was fat is a terrible trade, so we check the
+# serialised frame here and fail that one request instead.
+#
+# Checked after serialisation on purpose: JSON escaping inflates non-ASCII
+# badly (a CJK character is 3 UTF-8 bytes but 6 as \uXXXX, an emoji 4 bytes
+# but 12 as a surrogate pair), so the source file's size is not a usable
+# proxy for the frame's size.
+MAX_FRAME_BYTES = 1024 * 1024
+
+
+class PayloadTooLarge(Exception):
+    """The serialised request frame would exceed what the phone will accept."""
+
 
 class PhoneLink:
     """The single connected device, and the queries in flight to it."""
@@ -104,13 +124,21 @@ class PhoneLink:
 
         self.request_counter += 1
         query_id = f"q_{int(time.time() * 1000)}_{self.request_counter}"
+
+        frame = json.dumps({"id": query_id, "action": action, "data": data})
+        frame_bytes = len(frame.encode("utf-8"))
+        if frame_bytes > MAX_FRAME_BYTES:
+            raise PayloadTooLarge(
+                f"Request frame is {frame_bytes / 1048576:.2f} MB, over the "
+                f"{MAX_FRAME_BYTES // 1048576} MB the phone will accept. "
+                f"Split the document and send it in pieces."
+            )
+
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self.pending[query_id] = future
 
         try:
-            await self.websocket.send_text(
-                json.dumps({"id": query_id, "action": action, "data": data})
-            )
+            await self.websocket.send_text(frame)
             return await asyncio.wait_for(future, timeout=timeout)
         finally:
             self.pending.pop(query_id, None)
@@ -124,25 +152,60 @@ async def _phone_socket(websocket: WebSocket) -> None:
     if phone.is_connected:
         # One device at a time. Silently replacing the existing link would
         # strand whatever is in flight on it.
+        #
+        # Accept before closing, even though we are about to hang up: closing
+        # an un-accepted WebSocket makes the ASGI server reject the handshake
+        # with a bare HTTP 403 and the close code and reason are discarded, so
+        # the second phone is told nothing about why. Accepting first costs one
+        # round trip and lets 4409 and its reason actually arrive.
+        await websocket.accept()
         await websocket.close(code=4409, reason="A phone is already linked.")
+        print("[bridge] refused a second phone; one is already linked")
         return
 
     await phone.attach(websocket)
     print(f"[bridge] phone linked from {websocket.client.host}")
     try:
         while True:
-            message = json.loads(await websocket.receive_text())
+            raw = await websocket.receive_text()
+            try:
+                message = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                # One corrupt frame is not a reason to tear down a working
+                # link and strand every other request on it. Drop the frame,
+                # say so, keep going.
+                print(f"[bridge] ignoring unparseable frame ({exc})")
+                continue
+            if not isinstance(message, dict):
+                print(f"[bridge] ignoring non-object frame: {type(message).__name__}")
+                continue
+
             action = message.get("action")
+            message_id = message.get("id")
 
             # Order matters: see the module docstring.
             if action == "telemetry":
-                phone.device_info = message.get("data", {})
+                # The documented footgun: a reply that reuses the action name
+                # "telemetry" is swallowed here and the caller times out with
+                # nothing logged anywhere. It costs one dict lookup to notice
+                # that this "status frame" is answering a live request, and a
+                # silent 20 s timeout is a genuinely awful thing to debug.
+                if message_id in phone.pending:
+                    print(f"[bridge] WARNING: frame {message_id} replied with "
+                          f'action="telemetry"; a reply must use '
+                          f'action="result" or it is read as a status frame')
+                data = message.get("data")
+                if isinstance(data, dict):
+                    phone.device_info = data
                 continue
 
-            message_id = message.get("id")
             future = phone.pending.get(message_id)
             if future and not future.done():
                 future.set_result(message.get("data", {}))
+            elif message_id is not None:
+                # Late reply after a timeout, or a phone-side id bug. Either
+                # way the caller is already gone; log it so it is findable.
+                print(f"[bridge] reply for unknown/expired id {message_id!r}")
     except WebSocketDisconnect:
         print("[bridge] phone disconnected")
     except Exception as exc:  # noqa: BLE001 - any failure means the link is gone
@@ -179,6 +242,32 @@ def _offline() -> JSONResponse:
                      "the Bridge tab, and connect to this machine."
         },
     )
+
+
+def _too_large(exc: PayloadTooLarge) -> JSONResponse:
+    return JSONResponse(status_code=413, content={"error": str(exc)})
+
+
+def _stamped(response: Any, started: float) -> Any:
+    """Adds the roundtrip timing, tolerating a phone that did not send a dict.
+
+    The phone is supposed to reply with a JSON object, but a buggy or
+    half-ported client can send a list, a bare string or null, and
+    `response["..."] = ...` on any of those is an unhandled TypeError — i.e.
+    a 500 with a stack trace in the log and nothing useful for the caller.
+    A malformed reply is the device's problem to report, not ours to crash
+    on, so wrap anything that is not an object and let the caller see it.
+    """
+    latency = round((time.perf_counter() - started) * 1000, 2)
+    if isinstance(response, dict):
+        response["roundtrip_latency_ms"] = latency
+        return response
+    return {
+        "error": "Phone sent a malformed reply (expected a JSON object, got "
+                 f"{type(response).__name__}).",
+        "raw_reply": response,
+        "roundtrip_latency_ms": latency,
+    }
 
 
 @app.get("/api/status")
@@ -236,11 +325,10 @@ async def query_phone(request: QueryRequest):
         )
     except ConnectionError as exc:
         return JSONResponse(status_code=503, content={"error": str(exc)})
+    except PayloadTooLarge as exc:
+        return _too_large(exc)
 
-    response["roundtrip_latency_ms"] = round(
-        (time.perf_counter() - started) * 1000, 2
-    )
-    return response
+    return _stamped(response, started)
 
 
 @app.get("/api/llm")
@@ -295,11 +383,10 @@ async def ask_phone(request: AskRequest):
         )
     except ConnectionError as exc:
         return JSONResponse(status_code=503, content={"error": str(exc)})
+    except PayloadTooLarge as exc:
+        return _too_large(exc)
 
-    response["roundtrip_latency_ms"] = round(
-        (time.perf_counter() - started) * 1000, 2
-    )
-    return response
+    return _stamped(response, started)
 
 
 @app.post("/api/index")
@@ -322,11 +409,10 @@ async def index_document(request: IndexRequest):
         )
     except ConnectionError as exc:
         return JSONResponse(status_code=503, content={"error": str(exc)})
+    except PayloadTooLarge as exc:
+        return _too_large(exc)
 
-    response["roundtrip_latency_ms"] = round(
-        (time.perf_counter() - started) * 1000, 2
-    )
-    return response
+    return _stamped(response, started)
 
 
 def _lan_addresses() -> list[str]:

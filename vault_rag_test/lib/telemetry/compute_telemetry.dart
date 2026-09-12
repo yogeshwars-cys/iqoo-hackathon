@@ -120,6 +120,76 @@ extension ComputeLaneInfo on ComputeLane {
       };
 }
 
+/// A window of [TelemetrySample]s reduced to one number per lane.
+///
+/// [averagePercent] is null for a lane that was never available during the
+/// window, never zero — the difference between "measured, and it was idle"
+/// and "nothing here can say" is the entire point of [ProbeKind], and
+/// averaging must not erase it the way plotting a flat zero would on the
+/// chart.
+class ComputeUsageSummary {
+  final Map<ComputeLane, double?> averagePercent;
+  final Map<ComputeLane, ProbeKind> kind;
+  final int sampleCount;
+  final ThermalState? thermal;
+
+  const ComputeUsageSummary({
+    required this.averagePercent,
+    required this.kind,
+    required this.sampleCount,
+    this.thermal,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'samples': sampleCount,
+        for (final lane in ComputeLane.values)
+          lane.name: {
+            'avg_percent': averagePercent[lane],
+            'kind': kind[lane]?.name,
+          },
+        if (thermal != null && thermal!.isKnown) 'thermal': thermal!.toJson(),
+      };
+}
+
+/// Reduces [samples] to one [ComputeUsageSummary], averaging only over the
+/// readings each lane actually reported.
+///
+/// A lane that drops out mid-run (SELinux starts denying a read, a devfreq
+/// node disappears) should not have those gaps silently pull its average
+/// toward zero — that would look like the accelerator went idle, when the
+/// truth is this run stopped being able to ask it.
+ComputeUsageSummary summarizeUsage(
+  Iterable<TelemetrySample> samples, {
+  ThermalState? thermal,
+}) {
+  final list = samples.toList(growable: false);
+  final avg = <ComputeLane, double?>{};
+  final kind = <ComputeLane, ProbeKind>{};
+
+  for (final lane in ComputeLane.values) {
+    final probes = list.map((s) => switch (lane) {
+          ComputeLane.cpu => s.cpu,
+          ComputeLane.gpu => s.gpu,
+          ComputeLane.npu => s.npu,
+          ComputeLane.duty => s.duty,
+        });
+    final available = probes.where((p) => p.isAvailable).toList();
+    avg[lane] = available.isEmpty
+        ? null
+        : available.map((p) => p.value!).reduce((a, b) => a + b) /
+            available.length;
+    kind[lane] =
+        probes.isEmpty ? ProbeKind.unavailable : probes.last.kind;
+  }
+
+  return ComputeUsageSummary(
+    averagePercent: avg,
+    kind: kind,
+    sampleCount: list.length,
+    thermal: thermal,
+  );
+}
+
 class ComputeTelemetry extends ChangeNotifier {
   /// 1 Hz. Fast enough that a 250 ms embedding shows up as a visible bump,
   /// slow enough that reading eight sysfs files never competes with the
@@ -142,6 +212,9 @@ class ComputeTelemetry extends ChangeNotifier {
   Timer? _timer;
   bool _paused = false;
   DateTime? _lastTickAt;
+
+  /// Set by [dispose]. Read by [_notify]; see it.
+  bool _disposed = false;
 
   /// Static facts, fetched once at [start].
   DeviceFacts deviceFacts = DeviceFacts.unknown;
@@ -187,6 +260,15 @@ class ComputeTelemetry extends ChangeNotifier {
     _systemCpu.sample();
     _processCpu.sample();
     _gpu.sample();
+    // The meter is a delta counter too, and it keeps counting while the
+    // timer is stopped — the bridge serves queries with the app
+    // backgrounded, which is the whole point of it. Without this drain all
+    // of that work is attributed to the first window after resume: a phone
+    // that spent four minutes in a pocket answering the desktop comes back
+    // showing one second of 100 % duty and every one of those inferences
+    // stamped on a single sample. Priming here rather than in [stop] so it
+    // also covers a start() that follows a long bootstrap.
+    meter.drain();
     _timer = Timer.periodic(interval, (_) => _tick());
   }
 
@@ -195,12 +277,25 @@ class ComputeTelemetry extends ChangeNotifier {
     _timer = null;
   }
 
+  /// [notifyListeners] that tolerates being called after disposal.
+  ///
+  /// [_loadPlatformFacts] and the thermal poll are method-channel round
+  /// trips started by [start] and finished whenever the platform gets to
+  /// them. Backgrounding the app during a cold start is enough to have one
+  /// land after the widget tree that owned this is gone, and ChangeNotifier
+  /// throws if notified then. Same idiom, and same reason, as
+  /// VaultEngine._notify.
+  void _notify() {
+    if (_disposed) return;
+    notifyListeners();
+  }
+
   Future<void> _loadPlatformFacts() async {
     if (deviceFacts == DeviceFacts.unknown) {
       deviceFacts = await DeviceFacts.load();
     }
     thermal = await ThermalState.read();
-    notifyListeners();
+    _notify();
   }
 
   void setPaused(bool value) {
@@ -210,12 +305,12 @@ class ComputeTelemetry extends ChangeNotifier {
     // a resumed chart then shows a real value on the very next tick instead
     // of one bogus spike covering the whole paused interval.
     if (!value) _lastTickAt = DateTime.now();
-    notifyListeners();
+    _notify();
   }
 
   void clearHistory() {
     _history.clear();
-    notifyListeners();
+    _notify();
   }
 
   void _tick() {
@@ -281,7 +376,7 @@ class ComputeTelemetry extends ChangeNotifier {
       ),
       inferences: drained.count,
     ));
-    notifyListeners();
+    _notify();
   }
 
   void _push(TelemetrySample s) {
@@ -313,6 +408,18 @@ class ComputeTelemetry extends ChangeNotifier {
     };
   }
 
+  /// Samples recorded at or after [since].
+  ///
+  /// A benchmark that runs for seconds (generation) rather than
+  /// milliseconds (embedding) should not describe its hardware cost with two
+  /// point-in-time snapshots — that is the same mistake §3 of BUILD_NOTES
+  /// warns against for latency, applied to utilisation instead: a snapshot
+  /// taken right as the run starts or ends can land in a governor ramp and
+  /// miss the sustained load entirely. [summarizeUsage] turns this window
+  /// into the honest per-lane average.
+  Iterable<TelemetrySample> samplesSince(DateTime since) =>
+      history.where((s) => !s.at.isBefore(since));
+
   /// Compact snapshot for the bridge telemetry frame and for benchmark
   /// exports.
   Map<String, dynamic> snapshot() {
@@ -338,6 +445,7 @@ class ComputeTelemetry extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     stop();
     super.dispose();
   }

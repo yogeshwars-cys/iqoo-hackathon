@@ -55,12 +55,40 @@ const String promptVersion = 'capsule-v1';
 /// responsive.
 const int maxContextChars = 6000;
 
-/// Builds the full prompt for one query.
+/// Builds the full Gemma prompt for one query — [buildCapsuleContent] wrapped
+/// in Gemma's own turn markers. Only [LlmRuntime] (the MediaPipe/Gemma path)
+/// should ever call this one directly.
+///
+/// WHY THIS IS SPLIT FROM [buildCapsuleContent] AT ALL
+///
+/// MediaPipe's `generateResponse` takes raw text and sends exactly that to
+/// the model — it does not know or apply a chat template, which is why the
+/// turn markers have to be typed into the prompt by hand here in the first
+/// place. llama.cpp's path is the opposite: `vault_llama_jni.cpp`'s
+/// `op_generate` looks up *the loaded model's own* chat template and applies
+/// it via `common_chat_templates_apply`. Handing that path a prompt that
+/// already contains Gemma's `<start_of_turn>`/`<end_of_turn>` markers would
+/// not skip templating, it would template *around* them — Qwen3 or SmolLM2
+/// wrapping literal Gemma syntax inside their own turn syntax, which is
+/// exactly the kind of malformed input that produces a capsule the parser
+/// cannot recover. [LlamaRuntime] must be given [buildCapsuleContent]
+/// instead, letting the native side apply the right template for whichever
+/// model is actually loaded.
+String buildCapsulePrompt(SearchResult result) =>
+    '<start_of_turn>user\n${buildCapsuleContent(result)}<end_of_turn>\n'
+    '<start_of_turn>model\n';
+
+/// The capsule instructions, schema, worked example and retrieved context —
+/// everything [buildCapsulePrompt] wraps in Gemma's turn markers, without
+/// them. This is what [LlamaRuntime] should be given: llama.cpp applies
+/// whichever chat template the loaded GGUF model actually declares, so
+/// baking in a specific model's turn syntax here would be wrong for every
+/// other model that runtime can load.
 ///
 /// [chunks] should already be ranked; they are included best-first and
 /// truncated at [maxContextChars], so a budget overrun drops the least
 /// relevant material rather than an arbitrary tail.
-String buildCapsulePrompt(SearchResult result) {
+String buildCapsuleContent(SearchResult result) {
   final context = StringBuffer();
   var used = 0;
   var included = 0;
@@ -88,8 +116,7 @@ String buildCapsulePrompt(SearchResult result) {
     context.writeln('(no context was retrieved)');
   }
 
-  return '''<start_of_turn>user
-You convert retrieved document context into a single JSON object. You do not chat, explain, or add commentary.
+  return '''You convert retrieved document context into a single JSON object. You do not chat, explain, or add commentary.
 
 RULES
 1. Output exactly one JSON object. No prose before it, no prose after it, no markdown fences.
@@ -135,14 +162,5 @@ ${context.toString().trimRight()}
 QUESTION: ${result.query}
 
 OUTPUT:
-<end_of_turn>
-<start_of_turn>model
 ''';
 }
-
-/// Rough token estimate for the prompt, used to size the generation budget.
-///
-/// Deliberately crude — about 3.6 characters per token for English prose
-/// with code mixed in. It only needs to be good enough to keep the request
-/// inside the window, and the alternative is shipping a second tokenizer.
-int estimateTokens(String text) => (text.length / 3.6).ceil();

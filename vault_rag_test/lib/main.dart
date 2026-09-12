@@ -16,14 +16,17 @@
 /// same time" is a native crash rather than a race you can debug.
 ///
 /// So the pipeline moved into [VaultEngine], which serialises every call
-/// that touches the interpreter, and this file became what wires the four
-/// long-lived objects together and hands them to three screens:
+/// that touches the interpreter, and this file became what wires the six
+/// long-lived objects together and hands them to four screens:
 ///
-///   VaultEngine       the encoder, the chunker, the vector store
-///   LlmRuntime        Gemma, for reasoning - optional, loaded on demand
-///   ComputeTelemetry  1 Hz sysfs sampling for the charts
-///   BenchmarkRunner   repeatable load, driven by the engine
-///   BridgeClient      the outbound WebSocket to bridge_server.py
+///   VaultEngine        the encoder, the chunker, the vector store
+///   LlmRuntime         Gemma, for reasoning - optional, loaded on demand
+///   ComputeTelemetry   1 Hz sysfs sampling for the charts
+///   BenchmarkRunner    repeatable embedding load, driven by the engine
+///   LlmBenchmarkRunner repeatable generation load on whichever backend
+///                      LlmRuntime already has loaded - see its file header
+///                      for why it never switches backends itself
+///   BridgeClient       the outbound WebSocket to bridge_server.py
 ///
 /// The two models divide the work strictly: MiniLM encodes (every ingest,
 /// every query, always loaded, ~230 ms) and Gemma reasons over what
@@ -44,11 +47,13 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'bridge/bridge_client.dart';
+import 'core/llm/llama_runtime.dart';
 import 'core/llm/llm_runtime.dart';
 import 'core/llm/model_settings.dart';
 import 'core/vault_engine.dart';
 import 'telemetry/benchmark_runner.dart';
 import 'telemetry/compute_telemetry.dart';
+import 'telemetry/llm_benchmark_runner.dart';
 import 'ui/bridge_page.dart';
 import 'ui/model_page.dart';
 import 'ui/stats_page.dart';
@@ -93,8 +98,10 @@ class _AppShellState extends State<AppShell> {
 
   late final VaultEngine _engine;
   late final LlmRuntime _llm;
+  late final LlamaRuntime _llama;
   late final ComputeTelemetry _telemetry;
   late final BenchmarkRunner _benchmark;
+  late final LlmBenchmarkRunner _llmBenchmark;
   late final BridgeClient _bridge;
   AppLifecycleListener? _lifecycle;
 
@@ -122,11 +129,17 @@ class _AppShellState extends State<AppShell> {
     _llm.onGeneration = _meter.record;
     _engine.llm = _llm;
 
+    // The llama.cpp/GGUF path, alongside _llm rather than replacing it — see
+    // llama_runtime.dart's file header. VaultEngine.ask() prefers this one
+    // when it is ready, so loading a GGUF model here also makes it the
+    // engine "Ask on device" actually reasons with.
+    _llama = LlamaRuntime();
+    _llama.onGeneration = _meter.record;
+    _engine.llama = _llama;
+
     _telemetry = ComputeTelemetry(meter: _meter);
-    _benchmark = BenchmarkRunner(
-      engine: _engine,
-      telemetrySnapshot: _telemetry.snapshot,
-    );
+    _benchmark = BenchmarkRunner(engine: _engine, telemetry: _telemetry);
+    _llmBenchmark = LlmBenchmarkRunner(llm: _llm, telemetry: _telemetry);
     _bridge = BridgeClient(
       engine: _engine,
       telemetrySnapshot: _telemetry.snapshot,
@@ -142,6 +155,17 @@ class _AppShellState extends State<AppShell> {
     );
 
     _bootstrap();
+  }
+
+  /// Resolves the persisted backend name back to [LlamaBackend], or null if
+  /// nothing was ever remembered — a plain loop rather than
+  /// package:collection's firstOrNull, which this project does not
+  /// otherwise depend on.
+  LlamaBackend? _rememberedLlamaBackend() {
+    for (final backend in LlamaBackend.values) {
+      if (backend.name == _modelSettings.llamaBackend) return backend;
+    }
+    return null;
   }
 
   Future<void> _bootstrap() async {
@@ -181,8 +205,10 @@ class _AppShellState extends State<AppShell> {
     _lifecycle?.dispose();
     _bridge.dispose();
     _llm.dispose();
+    _llama.dispose();
     _telemetry.dispose();
     _benchmark.dispose();
+    _llmBenchmark.dispose();
     _engine.dispose();
     super.dispose();
   }
@@ -233,9 +259,19 @@ class _AppShellState extends State<AppShell> {
             VaultPage(engine: _engine, llm: _llm),
             ModelPage(
               llm: _llm,
+              llama: _llama,
               rememberedPath: _modelSettings.modelPath,
               onRemember: (path) async {
                 _modelSettings = _modelSettings.copyWith(modelPath: path);
+                await _modelSettings.save(_documentsPath);
+              },
+              rememberedLlamaPath: _modelSettings.llamaModelPath,
+              rememberedLlamaBackend: _rememberedLlamaBackend(),
+              onRememberLlama: (path, backend) async {
+                _modelSettings = _modelSettings.copyWith(
+                  llamaModelPath: path,
+                  llamaBackend: backend.name,
+                );
                 await _modelSettings.save(_documentsPath);
               },
             ),
@@ -243,6 +279,8 @@ class _AppShellState extends State<AppShell> {
             StatsPage(
               telemetry: _telemetry,
               benchmark: _benchmark,
+              llmBenchmark: _llmBenchmark,
+              llm: _llm,
               engine: _engine,
               vocabText: _vocabText,
             ),

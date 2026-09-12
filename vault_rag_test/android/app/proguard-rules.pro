@@ -46,3 +46,12 @@
 -keepclassmembers class * extends com.google.protobuf.GeneratedMessageLite {
     <fields>;
 }
+
+# vault_llama_jni.cpp binds natives via JNI_OnLoad + RegisterNatives rather
+# than the Java_pkg_Class_method naming convention (this package name has
+# underscores, which that convention escapes as literal "_1" — easy to get
+# wrong with nothing to catch it). RegisterNatives looks the class up by its
+# fully-qualified name string and binds native methods by name+signature, so
+# both the class name and its method names/signatures must survive R8
+# unrenamed, or the lookup and the binding silently stop matching.
+-keep class com.example.vault_rag_test.LlamaEngine { *; }

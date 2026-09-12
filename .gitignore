@@ -40,3 +40,10 @@ voices/
 # Rendered video is a build artifact; the project regenerates it.
 vault_video/out/
 *.mp4
+
+# GGUF weights (Qwen3/SmolLM2 etc.) are side-loaded, never committed — see
+# vault_rag_test/model_registry.json for sources and checksums.
+*.gguf
+
+# run_eval.py output; per-machine, regenerated on every run.
+bridge/corpus/results/

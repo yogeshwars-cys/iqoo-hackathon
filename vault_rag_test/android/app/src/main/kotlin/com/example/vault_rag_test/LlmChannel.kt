@@ -2,6 +2,7 @@ package com.example.vault_rag_test
 
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import com.google.mediapipe.tasks.genai.llminference.LlmInference.Backend
 import io.flutter.plugin.common.BinaryMessenger
@@ -32,6 +33,22 @@ import java.util.concurrent.Executors
  *
  * MethodChannel.Result must be answered on the main thread, hence the
  * Handler round-trip on the way back.
+ *
+ * WHAT THIS LAYER CAN AND CANNOT DO ABOUT THE BACKEND-MISMATCH CRASH
+ *
+ * Cannot: catch it. Handing CPU-quantised weights to the GPU backend faults
+ * inside native code. SIGSEGV is delivered to the process, not thrown up the
+ * JNI boundary, so `catch (e: Throwable)` never sees it — the catch below is
+ * for the recoverable case, a GPU init that fails loudly, and it genuinely
+ * does catch those. Anyone reading that catch and concluding the crash is
+ * handled here is reading it wrong.
+ *
+ * Can, and now does: refuse to invent a backend when Dart did not name one
+ * (see onLoad), and leave a logcat breadcrumb immediately before the call
+ * that might not return. Those are the only two moves available. Everything
+ * else about avoiding the crash has to happen before this point, in the Dart
+ * policy layer, because by the time control is here the decision is already
+ * made and the next line either returns or ends the process.
  */
 class LlmChannel(messenger: BinaryMessenger) : MethodChannel.MethodCallHandler {
 
@@ -66,7 +83,33 @@ class LlmChannel(messenger: BinaryMessenger) : MethodChannel.MethodCallHandler {
             return
         }
 
-        val backendName = call.argument<String>("backend") ?: "gpu"
+        // Parsed strictly, with no default.
+        //
+        // This used to read `call.argument<String>("backend") ?: "gpu"`, with
+        // the mapping below written as `if (name == "cpu") CPU else GPU`.
+        // Between them that is a second GPU-first default, hidden a language
+        // away from the Dart policy that is supposed to own this decision: a
+        // missing argument, a typo, or a future enum rename would all land
+        // silently on GPU. GPU is the one value that can kill the process on
+        // the wrong weights, so it is the one value that must never be
+        // reached by accident. An unrecognised backend is now a refused call
+        // with a message, which is a bug report; guessing GPU is a SIGSEGV,
+        // which is not.
+        val requestedBackend = call.argument<String>("backend")
+        val backend = when (requestedBackend) {
+            "cpu" -> Backend.CPU
+            "gpu" -> Backend.GPU
+            else -> null
+        }
+        if (backend == null) {
+            result.error(
+                "BAD_ARGS",
+                "Backend must be \"cpu\" or \"gpu\", got ${requestedBackend ?: "nothing"}.",
+                null
+            )
+            return
+        }
+
         val maxTokens = call.argument<Int>("maxTokens") ?: 1024
 
         worker.execute {
@@ -92,12 +135,23 @@ class LlmChannel(messenger: BinaryMessenger) : MethodChannel.MethodCallHandler {
                 val options = LlmInference.LlmInferenceOptions.builder()
                     .setModelPath(path)
                     .setMaxTokens(maxTokens)
-                    .setPreferredBackend(
-                        if (backendName == "cpu") Backend.CPU else Backend.GPU
-                    )
+                    .setPreferredBackend(backend)
                     .build()
 
+                // Logged BEFORE the call, and deliberately not after.
+                //
+                // createFromOptions on mismatched weights does not throw — it
+                // segfaults inside libllm_inference_engine_jni.so and the
+                // process is gone before any catch, any reply, or any Dart
+                // code runs. The only thing that survives is what already
+                // reached logcat. So this line is the entire post-mortem: a
+                // crash report whose last vault line is an "attempting" with
+                // no matching "loaded" names the file and the backend that
+                // killed it. Do not move it below the call or fold the two
+                // into one message.
+                Log.i(TAG, "attempting load backend=$requestedBackend path=$path")
                 inference = LlmInference.createFromOptions(applicationContext, options)
+                Log.i(TAG, "loaded backend=$requestedBackend")
                 reply(result) { it.success(null) }
             } catch (e: Throwable) {
                 // Throwable, not Exception: a failed GPU init surfaces as an
@@ -171,6 +225,8 @@ class LlmChannel(messenger: BinaryMessenger) : MethodChannel.MethodCallHandler {
     }
 
     companion object {
+        private const val TAG = "vault-llm"
+
         /**
          * Set by MainActivity before the channel is constructed.
          *

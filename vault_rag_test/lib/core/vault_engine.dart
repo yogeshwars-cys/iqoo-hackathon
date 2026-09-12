@@ -34,6 +34,7 @@ import 'chunking.dart';
 import 'embedding_service.dart';
 import 'llm/capsule.dart';
 import 'llm/capsule_prompt.dart';
+import 'llm/llama_runtime.dart';
 import 'llm/llm_runtime.dart';
 import 'vector_store.dart';
 
@@ -134,6 +135,12 @@ class VaultEngine extends ChangeNotifier {
   /// model is loaded.
   LlmRuntime? llm;
 
+  /// The llama.cpp/GGUF path, independent of [llm] — see
+  /// llama_runtime.dart's file header for why both exist side by side.
+  /// [ask] prefers this one when it is ready, since loading a GGUF model is
+  /// the more deliberate, specific action of the two.
+  LlamaRuntime? llama;
+
   VectorStore? _store;
   EngineState _state = EngineState.loading;
   String _statusLine = 'Loading embedding model…';
@@ -143,6 +150,9 @@ class VaultEngine extends ChangeNotifier {
 
   /// Tail of the promise chain that serialises interpreter access.
   Future<void> _lock = Future<void>.value();
+
+  /// Set by [dispose]. Read by [_serialized] and [_notify]; see both.
+  bool _disposed = false;
 
   VaultEngine({
     MiniLMEmbeddingService? embeddings,
@@ -168,9 +178,26 @@ class VaultEngine extends ChangeNotifier {
   /// queue instead of failing, which is what a socket peer needs — the
   /// bridge cannot retry a rejected index the way a user can re-tap a
   /// button.
+  ///
+  /// The [_disposed] check is inside the chained callback as well as at the
+  /// entry point, and both are load-bearing. Entry catches calls made after
+  /// disposal; the inner one catches the worse case — a task that was queued
+  /// while the engine was alive and reaches the front of the queue after
+  /// [dispose] has run. Without it that task calls `embed()` on a closed
+  /// interpreter, which is a use-after-free in native memory rather than a
+  /// Dart exception.
   Future<T> _serialized<T>(Future<T> Function() action) {
+    if (_disposed) {
+      return Future.error(StateError('Vault engine has been disposed.'));
+    }
     final completer = Completer<T>();
     _lock = _lock.then((_) async {
+      if (_disposed) {
+        completer.completeError(
+          StateError('Vault engine was disposed while this call was queued.'),
+        );
+        return;
+      }
       try {
         completer.complete(await action());
       } catch (e, st) {
@@ -178,6 +205,17 @@ class VaultEngine extends ChangeNotifier {
       }
     });
     return completer.future;
+  }
+
+  /// [notifyListeners] that tolerates being called after disposal.
+  ///
+  /// Work runs asynchronously and can finish after the widget tree that
+  /// started it is gone — a bridge request in flight when the app is
+  /// backgrounded, most obviously. ChangeNotifier throws if notified after
+  /// dispose, so every notification from inside the queue goes through here.
+  void _notify() {
+    if (_disposed) return;
+    notifyListeners();
   }
 
   Future<void> initialize({
@@ -200,7 +238,7 @@ class VaultEngine extends ChangeNotifier {
       _error = e;
       _statusLine = 'Model failed to load: $e';
     }
-    notifyListeners();
+    _notify();
   }
 
   /// Chunks [content], embeds every chunk, and writes them to the vault.
@@ -230,7 +268,7 @@ class VaultEngine extends ChangeNotifier {
       }
 
       sw.stop();
-      notifyListeners();
+      _notify();
       return IndexResult(
         fileName: fileName,
         chunksAdded: chunks.length,
@@ -269,9 +307,22 @@ class VaultEngine extends ChangeNotifier {
   /// two would deadlock the engine on the first query — the inner call
   /// would queue behind the outer one, which is waiting for it.
   ///
-  /// Generation has its own queue inside [LlmRuntime]. The two stages are
-  /// serialised independently, so an embedding can start while a previous
-  /// query is still being written up.
+  /// Generation has its own queue inside whichever runtime answers. The two
+  /// stages are serialised independently, so an embedding can start while a
+  /// previous query is still being written up.
+  ///
+  /// TWO ENGINES, ONE CALL SITE
+  ///
+  /// [llama] wins when it is ready, [llm] (MediaPipe/Gemma) otherwise —
+  /// never both. The two use different prompt shapes on purpose:
+  /// [buildCapsulePrompt] hand-wraps Gemma's own turn markers because
+  /// MediaPipe's `generateResponse` has no chat-template support of its own,
+  /// while [buildCapsuleContent] is deliberately unwrapped because
+  /// llama.cpp applies whichever template the loaded GGUF model actually
+  /// declares. Handing [buildCapsulePrompt]'s Gemma-wrapped text to the
+  /// llama.cpp path would not skip templating, it would template *around*
+  /// literal Gemma syntax — see capsule_prompt.dart for why that produces a
+  /// capsule the parser cannot recover.
   Future<ContextCapsule> ask(
     String query, {
     int topK = 5,
@@ -279,8 +330,13 @@ class VaultEngine extends ChangeNotifier {
   }) async {
     final result = await search(query, topK: topK);
 
-    final runtime = llm;
-    if (!generate || runtime == null || !runtime.isReady) {
+    final activeLlama = llama;
+    final useLlama = generate && activeLlama != null && activeLlama.isReady;
+    final activeLlm = llm;
+    final useLlm =
+        generate && !useLlama && activeLlm != null && activeLlm.isReady;
+
+    if (!useLlama && !useLlm) {
       return ContextCapsule.fromRetrievalOnly(result);
     }
 
@@ -291,15 +347,34 @@ class VaultEngine extends ChangeNotifier {
       return ContextCapsule.fromRetrievalOnly(result);
     }
 
+    final model = useLlama ? activeLlama.modelLabel : activeLlm!.modelLabel;
+    final backend = useLlama
+        ? 'llama.cpp/${activeLlama.backend?.label ?? "?"}'
+        : activeLlm!.backendLabel;
+
     try {
-      final generated = await runtime.generate(buildCapsulePrompt(result));
+      final String text;
+      final int elapsedMs;
+      final int? tokens;
+      if (useLlama) {
+        final generated = await activeLlama.generate(buildCapsuleContent(result));
+        text = generated.text;
+        elapsedMs = generated.prefillMs + generated.decodeMs;
+        tokens = generated.tokens;
+      } else {
+        final generated = await activeLlm!.generate(buildCapsulePrompt(result));
+        text = generated.text;
+        elapsedMs = generated.elapsedMs;
+        tokens = generated.tokens;
+      }
+
       return ContextCapsule.fromModelOutput(
-        generated.text,
+        text,
         result,
-        model: runtime.modelLabel,
-        backend: runtime.backendLabel,
-        elapsedMs: generated.elapsedMs,
-        tokens: generated.tokens,
+        model: model,
+        backend: backend,
+        elapsedMs: elapsedMs,
+        tokens: tokens,
       );
     } catch (e) {
       // A generation failure must never lose the retrieval. The capsule
@@ -308,8 +383,8 @@ class VaultEngine extends ChangeNotifier {
         result,
         generation: CapsuleGeneration(
           ran: true,
-          model: runtime.modelLabel,
-          backend: runtime.backendLabel,
+          model: model,
+          backend: backend,
           parseError: 'Generation failed: $e',
         ),
       );
@@ -323,7 +398,7 @@ class VaultEngine extends ChangeNotifier {
 
   Future<void> clear() => _serialized(() async {
         _requireStore().clear();
-        notifyListeners();
+        _notify();
       });
 
   VectorStore _requireStore() {
@@ -345,13 +420,35 @@ class VaultEngine extends ChangeNotifier {
         'model_load_ms': _modelLoadMs,
         'total_indexed': chunkCount,
         'llm': llm?.describe() ?? {'state': 'unloaded'},
+        'llama': llama?.describe() ?? {'state': 'unloaded'},
         'capsule_prompt_version': promptVersion,
       };
 
+  /// Releases the interpreter and the database — but only once the queue has
+  /// drained.
+  ///
+  /// Closing them synchronously here is a use-after-free. `dispose()` runs
+  /// when the widget tree goes away, which can happen with a bridge request
+  /// mid-flight or an ingest still queued; those tasks then call into a
+  /// freed TFLite interpreter and a closed SQLite handle. That is a native
+  /// SIGSEGV, not a catchable Dart error — the exact failure class the rest
+  /// of this file exists to avoid.
+  ///
+  /// So [_disposed] goes up first, which makes every queued task bail out at
+  /// the front of the queue without touching native memory, and the actual
+  /// close is chained onto the tail of the lock. ChangeNotifier's own
+  /// `dispose` is called immediately because callers may not notify after
+  /// it; [_notify] is what keeps that safe.
   @override
   void dispose() {
-    _store?.close();
-    embeddings.close();
+    _disposed = true;
+    final drained = _lock;
     super.dispose();
+
+    unawaited(drained.whenComplete(() {
+      _store?.close();
+      _store = null;
+      embeddings.close();
+    }));
   }
 }
