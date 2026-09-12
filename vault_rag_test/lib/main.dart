@@ -51,10 +51,12 @@ import 'core/llm/llama_runtime.dart';
 import 'core/llm/llm_runtime.dart';
 import 'core/llm/model_settings.dart';
 import 'core/vault_engine.dart';
+import 'link/vault_link_service.dart';
 import 'telemetry/benchmark_runner.dart';
 import 'telemetry/compute_telemetry.dart';
 import 'telemetry/llm_benchmark_runner.dart';
 import 'ui/bridge_page.dart';
+import 'ui/link_page.dart';
 import 'ui/model_page.dart';
 import 'ui/stats_page.dart';
 import 'ui/theme.dart';
@@ -103,6 +105,7 @@ class _AppShellState extends State<AppShell> {
   late final BenchmarkRunner _benchmark;
   late final LlmBenchmarkRunner _llmBenchmark;
   late final BridgeClient _bridge;
+  late final VaultLinkService _link;
   AppLifecycleListener? _lifecycle;
 
   int _tab = 0;
@@ -141,6 +144,12 @@ class _AppShellState extends State<AppShell> {
     _benchmark = BenchmarkRunner(engine: _engine, telemetry: _telemetry);
     _llmBenchmark = LlmBenchmarkRunner(llm: _llm, telemetry: _telemetry);
     _bridge = BridgeClient(
+      engine: _engine,
+      telemetrySnapshot: _telemetry.snapshot,
+    );
+    // Clipboard-carried alternative to the WebSocket bridge above — same
+    // engine, same telemetry snapshot, no socket. See vault_link_service.dart.
+    _link = VaultLinkService(
       engine: _engine,
       telemetrySnapshot: _telemetry.snapshot,
     );
@@ -204,6 +213,7 @@ class _AppShellState extends State<AppShell> {
   void dispose() {
     _lifecycle?.dispose();
     _bridge.dispose();
+    _link.dispose();
     _llm.dispose();
     _llama.dispose();
     _telemetry.dispose();
@@ -276,6 +286,7 @@ class _AppShellState extends State<AppShell> {
               },
             ),
             BridgePage(client: _bridge, documentsPath: _documentsPath),
+            LinkPage(link: _link),
             StatsPage(
               telemetry: _telemetry,
               benchmark: _benchmark,
@@ -305,6 +316,11 @@ class _AppShellState extends State<AppShell> {
             icon: Icon(Icons.hub_outlined),
             selectedIcon: Icon(Icons.hub_rounded),
             label: 'Bridge',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.content_paste_outlined),
+            selectedIcon: Icon(Icons.content_paste_rounded),
+            label: 'Link',
           ),
           NavigationDestination(
             icon: Icon(Icons.insights_outlined),
