@@ -104,6 +104,19 @@ class MiniLMEmbeddingService implements EmbeddingService {
   /// CPU threads, used only on the plain CPU path.
   final int threads;
 
+  /// Called after every inference with the time the native interpreter
+  /// actually spent, in microseconds.
+  ///
+  /// A callback rather than a direct dependency on the telemetry layer, so
+  /// core/ stays importable on its own and unit-testable without a running
+  /// sampler. The app wires this to `InferenceMeter.record`.
+  ///
+  /// Deliberately fed from `lastNativeInferenceDurationMicroSeconds` and not
+  /// a Dart-side Stopwatch: the gap between the two is marshalling overhead,
+  /// and attributing that to the accelerator would inflate the duty-cycle
+  /// lane on the stats screen with time the model never ran for.
+  void Function(int micros)? onInference;
+
   Interpreter? _interpreter;
   Tokenizer? _tokenizer;
   List<Delegate> _ownedDelegates = const [];
@@ -364,6 +377,10 @@ class MiniLMEmbeddingService implements EmbeddingService {
     );
 
     interpreter.runInference(inputs);
+
+    // Report to the telemetry meter, if one is attached. Reads the native
+    // counter rather than timing the call, for the reason in [onInference].
+    onInference?.call(interpreter.lastNativeInferenceDurationMicroSeconds);
 
     // Read the output tensor's native buffer directly instead of going
     // through runForMultipleInputs.

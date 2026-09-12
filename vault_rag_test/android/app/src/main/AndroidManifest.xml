@@ -1,10 +1,33 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- This app requests no permissions. It does not need any: files arrive
-         through the system document picker (which grants per-file access
-         without a permission) and everything else stays in app-private
-         storage.
+    <!-- INTERNET is the only permission this app requests, and it is here
+         solely for the desktop co-processor bridge: the phone dials out to
+         a laptop running bridge_server.py over the LAN.
+
+         Everything else in the app - picking files, chunking, embedding,
+         the vector store, retrieval, the telemetry charts and the benchmark
+         - runs with the radios off and always will. The bridge is opt-in
+         per session, defaults to disconnected, and the screen that enables
+         it says plainly that retrieved chunks leave the device once it is
+         up. See lib/ui/bridge_page.dart.
+
+         Worth knowing for anyone auditing this: ws:// to a private address
+         is cleartext, and there is deliberately no
+         android:usesCleartextTraffic="true" here. That attribute governs
+         the platform HTTP stack; dart:io's WebSocket uses the Dart VM's own
+         sockets and never consults it, so setting the flag would weaken the
+         app's declared posture for every future component without being
+         needed by this one. Android's network security config cannot
+         express "private ranges only" - it keys on domains, not CIDR - so
+         there is no narrower flag worth adding either.
+
+         No other permission is needed: files arrive through the system
+         document picker (which grants per-file access without one) and
+         everything else stays in app-private storage. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--
 
          These three are not written by us or by any plugin - the manifest
          merger injects them via its legacy implied-permission rules, and they
@@ -15,10 +38,12 @@
 
            aapt2 dump permissions build\app\outputs\flutter-apk\app-release.apk
 
-         Note that debug and profile builds still carry INTERNET: Flutter's
-         tooling injects it in android/app/src/debug/AndroidManifest.xml so
-         `flutter run` can reach the Dart VM. Only a release build actually
-         demonstrates the no-network claim. -->
+         Flutter's tooling also injects INTERNET into the debug and profile
+         manifests so `flutter run` can reach the Dart VM. That used to be
+         the only place it appeared, and a release build was the proof of
+         the no-network claim. Since the bridge landed, release carries it
+         too, so the claim is now demonstrated at runtime instead: leave the
+         Bridge tab disconnected and no socket is ever opened. -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE"
         tools:node="remove" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
@@ -27,7 +52,7 @@
         tools:node="remove" />
 
     <application
-        android:label="vault_rag_test"
+        android:label="Vault Co-Processor"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

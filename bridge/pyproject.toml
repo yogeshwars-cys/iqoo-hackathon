@@ -1,0 +1,22 @@
+[project]
+name = "vault-cli"
+version = "1.0.0"
+description = "Command-line tools for the iQOO on-device RAG vault"
+requires-python = ">=3.10"
+
+# No runtime dependencies on purpose. The commands use stdlib HTTP only, so
+# `pip install -e .` never drags a dependency tree into whatever environment
+# someone happens to be in. The bridge server's own requirements live in
+# requirements.txt and are installed separately.
+dependencies = []
+
+[project.scripts]
+vault-embed = "vault_cli.embed:main"
+vault-query = "vault_cli.query:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["vault_cli"]

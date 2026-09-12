@@ -1,0 +1,7 @@
+# Desktop bridge. The phone needs none of this — it ships the model.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+websockets>=12.0
+
+# Only needed for iqoo_mcp_server.py.
+mcp>=1.2
