@@ -226,6 +226,15 @@ class VaultEngine extends ChangeNotifier {
         signer = signer ?? CapsuleSigner();
 
   EngineState get state => _state;
+
+  /// Puts the engine into [state] without loading a model — screenshot and
+  /// widget tests only. The encoder and store stay absent.
+  @visibleForTesting
+  void debugSetState(EngineState state, {String? statusLine}) {
+    _state = state;
+    if (statusLine != null) _statusLine = statusLine;
+    _notify();
+  }
   String get statusLine => _statusLine;
   Object? get error => _error;
   bool get isReady => _state == EngineState.ready;

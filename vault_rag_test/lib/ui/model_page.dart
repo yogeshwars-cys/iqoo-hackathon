@@ -164,189 +164,172 @@ class _ModelPageState extends State<ModelPage> {
       builder: (context, _) => ListView(
         padding: const EdgeInsets.fromLTRB(
           VaultSpace.lg,
-          VaultSpace.md,
+          VaultSpace.sm,
           VaultSpace.lg,
           VaultSpace.xxl,
         ),
         children: [
           _statusCard(),
-          const SizedBox(height: VaultSpace.md),
-          _pickerCard(),
-          if (_inspection != null) ...[
-            const SizedBox(height: VaultSpace.md),
-            _inspectionCard(_inspection!),
-          ],
+          const SizedBox(height: VaultSpace.lg),
+          _roleCard(),
+          const SizedBox(height: VaultSpace.xl),
+          _sectionHeader('Load a reasoner',
+              'Loading either runtime unloads the other.'),
           const SizedBox(height: VaultSpace.md),
           _llamaCard(),
-          const SizedBox(height: VaultSpace.md),
-          _roleCard(),
+          const SizedBox(height: VaultSpace.lg),
+          _pickerCard(),
+          if (_inspection != null) ...[
+            const SizedBox(height: VaultSpace.lg),
+            _inspectionCard(_inspection!),
+          ],
         ],
       ),
     );
   }
 
-  /// The one banner a judge — or you, five minutes ago — actually reads
-  /// first, so it has to answer the question honestly: is there a model
-  /// active right now, and which one. Wrong in the same direction as the
-  /// bug it replaces would be worse than saying nothing: this used to
-  /// report only [LlmRuntime]'s state, so a loaded llama.cpp model sat next
-  /// to a banner still saying "NOT LOADED — generation does not work",
-  /// directly contradicting the card two scrolls down that said LOADED in
-  /// green.
-  ///
-  /// The active-engine rule mirrors [VaultEngine.ask] exactly: llama.cpp
-  /// wins when ready, MediaPipe/Gemma otherwise. Two engines can be loaded
-  /// at once — nothing stops that — so both get a status line in the body,
-  /// but only one of them is what "Ask on device" actually reasons with,
-  /// and the banner says which.
+  Widget _sectionHeader(String title, String subtitle) {
+    final text = Theme.of(context).textTheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: VaultSpace.xs),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Semantics(header: true, child: Text(title, style: text.titleLarge)),
+          const SizedBox(height: 2),
+          Text(subtitle,
+              style: text.bodyMedium!.copyWith(color: VaultColors.muted)),
+        ],
+      ),
+    );
+  }
+
+  /// The one card read first, so it answers honestly: which reasoner is
+  /// selected, and is it loaded. It reads [ReasonerCoordinator] — the same
+  /// selection [VaultEngine.ask] routes by — rather than inferring from
+  /// whichever runtime happens to be ready, so it can never contradict what
+  /// "Ask on device" will actually use.
   Widget _statusCard() {
+    final text = Theme.of(context).textTheme;
     final llm = widget.llm;
     final llama = widget.llama;
-    final usingLlama = llama.isReady;
-    final anyReady = llm.isReady || llama.isReady;
-    final anyLoading = llm.state == LlmState.loading ||
+    final slot = widget.reasoner.activeSlot;
+    final ready = slot?.isReady ?? false;
+    final loading = llm.state == LlmState.loading ||
         llm.state == LlmState.probing ||
         llama.state == LlamaState.loading;
-    final anyFailed =
+    final failed =
         llm.state == LlmState.failed || llama.state == LlamaState.failed;
 
     final (label, color) = switch (true) {
-      _ when anyReady => ('LOADED', VaultColors.accent),
-      _ when anyLoading => ('LOADING', VaultColors.warn),
-      _ when anyFailed => ('FAILED', VaultColors.danger),
-      _ => ('NOT LOADED', VaultColors.faint),
+      _ when ready => ('Loaded', VaultColors.accent),
+      _ when loading => ('Loading', VaultColors.warn),
+      _ when failed => ('Failed', VaultColors.danger),
+      _ => ('Not loaded', VaultColors.faint),
     };
 
-    final subtitle = usingLlama
-        ? '${llama.modelLabel} on llama.cpp/${llama.backend?.label ?? "?"} '
-            '— active for "Ask on device"'
-        : llm.isReady
-            ? '${llm.modelLabel} on ${llm.backendLabel.toUpperCase()} '
-                '— active for "Ask on device"'
-            : 'Retrieval works without this. Generation does not.';
-
     return SectionCard(
-      title: 'Reasoning model',
-      subtitle: subtitle,
+      icon: Icons.psychology_rounded,
+      title: 'Active reasoner',
+      subtitle: slot == null ? 'None selected' : slot.kind.label,
       trailing: StatusPill(
         label: label,
         color: color,
-        pulsing: llm.isGenerating || llama.isGenerating || anyLoading,
+        pulsing: llm.isGenerating || llama.isGenerating || loading,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (llm.isReady) ...[
-            _engineStatusRow(
-              label: llm.isReady && usingLlama
-                  ? 'MediaPipe (loaded, not active)'
-                  : 'MediaPipe',
-              backend: llm.backendLabel.toUpperCase(),
-              loadMs: llm.loadMs,
-              queueDepth: llm.queueDepth,
-              onUnload: _working ? null : widget.llm.unload,
-              dimmed: usingLlama,
-            ),
-            const SizedBox(height: VaultSpace.sm),
-          ] else if (llm.state == LlmState.loading)
-            const _LoadingBlock(),
-          if (llama.isReady) ...[
-            _engineStatusRow(
-              label: 'llama.cpp',
-              backend: llama.backend?.label ?? '?',
-              loadMs: llama.loadMs,
-              queueDepth: llama.queueDepth,
-              onUnload: () => widget.llama.unload(),
-              dimmed: false,
-            ),
-          ] else if (llama.state == LlamaState.loading)
-            const _LoadingBlock(),
-          if (!anyReady && !anyLoading)
-            const Text(
-              'No model loaded. Queries still work — they return a capsule '
-              'built from retrieval alone, with the answer quoted verbatim '
-              'from the corpus instead of written.',
-              style: TextStyle(
-                color: VaultColors.faint,
-                fontSize: 12,
-                height: 1.5,
+          if (ready) ...[
+            Text(slot!.modelLabel, style: text.titleMedium!.copyWith(
+                fontFamily: 'monospace', fontWeight: FontWeight.w400,
+                fontSize: 15)),
+            const SizedBox(height: VaultSpace.md),
+            if (slot.kind == ReasonerKind.llama)
+              _engineMetrics(
+                backend: llama.backend?.label ?? '?',
+                loadMs: llama.loadMs,
+                queueDepth: llama.queueDepth,
+              )
+            else
+              _engineMetrics(
+                backend: llm.backendLabel.toUpperCase(),
+                loadMs: llm.loadMs,
+                queueDepth: llm.queueDepth,
               ),
+            const SizedBox(height: VaultSpace.md),
+            OutlinedButton.icon(
+              onPressed: _working || _llamaWorking
+                  ? null
+                  : () => widget.reasoner.unloadActive(),
+              icon: const Icon(Icons.eject_rounded, size: 18),
+              label: const Text('Unload'),
+            ),
+          ] else if (loading)
+            const _LoadingBlock()
+          else
+            Text(
+              'Queries still work without a model: the capsule is built from '
+              'retrieval alone and the answer is quoted verbatim from the '
+              'corpus instead of written.',
+              style: text.bodyMedium!.copyWith(color: VaultColors.muted),
             ),
           if (llm.error != null) ...[
             const SizedBox(height: VaultSpace.md),
-            _note(llm.error!, VaultColors.danger),
+            _note(llm.error!, NoticeTone.danger),
           ],
           if (llama.error != null) ...[
             const SizedBox(height: VaultSpace.md),
-            _note(llama.error!, VaultColors.danger),
+            _note(llama.error!, NoticeTone.danger),
           ],
         ],
       ),
     );
   }
 
-  Widget _engineStatusRow({
-    required String label,
+  Widget _engineMetrics({
     required String backend,
     required int loadMs,
     required int queueDepth,
-    required VoidCallback? onUnload,
-    required bool dimmed,
   }) {
-    final opacity = dimmed ? 0.55 : 1.0;
-    return Opacity(
-      opacity: opacity,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(
-            label,
-            style: const TextStyle(
-              color: VaultColors.muted,
-              fontSize: 10.5,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.6,
-            ),
+    return Row(
+      children: [
+        Expanded(
+          child: MetricTile(
+            label: 'Backend',
+            value: backend.toUpperCase(),
+            accent: VaultColors.accent,
           ),
-          const SizedBox(height: VaultSpace.xs),
-          Row(
-            children: [
-              Expanded(
-                child: MetricTile(
-                  label: 'BACKEND',
-                  value: backend.toUpperCase(),
-                  accent: VaultColors.accent,
-                ),
-              ),
-              const SizedBox(width: VaultSpace.sm),
-              Expanded(
-                child: MetricTile(label: 'LOAD', value: '$loadMs', unit: 'ms'),
-              ),
-              const SizedBox(width: VaultSpace.sm),
-              Expanded(
-                child: MetricTile(
-                  label: 'QUEUE',
-                  value: '$queueDepth',
-                  accent: queueDepth > 0 ? VaultColors.warn : null,
-                ),
-              ),
-            ],
+        ),
+        const SizedBox(width: VaultSpace.sm),
+        Expanded(
+          child: MetricTile(
+              label: 'Load', value: _seconds(loadMs), unit: loadMs < 1000 ? 'ms' : 's'),
+        ),
+        const SizedBox(width: VaultSpace.sm),
+        Expanded(
+          child: MetricTile(
+            label: 'Queue',
+            value: '$queueDepth',
+            accent: queueDepth > 0 ? VaultColors.warn : null,
           ),
-          const SizedBox(height: VaultSpace.sm),
-          OutlinedButton.icon(
-            onPressed: onUnload,
-            icon: const Icon(Icons.eject_rounded, size: 18),
-            label: const Text('Unload'),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
+  static String _seconds(int ms) =>
+      ms < 1000 ? '$ms' : (ms / 1000).toStringAsFixed(1);
+
   Widget _pickerCard() {
+    final llm = widget.llm;
     return SectionCard(
-      title: 'Model file',
-      subtitle: 'Gemma 2B int4, MediaPipe container (.task or .bin).',
+      icon: Icons.token_outlined,
+      title: 'MediaPipe',
+      subtitle: 'Gemma int4 bundle (.task or .bin)',
+      trailing: llm.isReady
+          ? const VaultTag('Loaded', selected: true)
+          : null,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -356,12 +339,12 @@ class _ModelPageState extends State<ModelPage> {
             autocorrect: false,
             style: VaultText.mono.copyWith(
               color: VaultColors.foreground,
-              fontSize: 12,
+              fontSize: 13,
             ),
             maxLines: 2,
             minLines: 1,
             decoration: const InputDecoration(
-              labelText: 'Path',
+              labelText: 'Model path',
               hintText: '/storage/emulated/0/Download/gemma2-2b-it-'
                   'cpu-int4.task',
             ),
@@ -378,7 +361,7 @@ class _ModelPageState extends State<ModelPage> {
               ),
               const SizedBox(width: VaultSpace.sm),
               Expanded(
-                child: OutlinedButton.icon(
+                child: FilledButton.tonalIcon(
                   onPressed: _working ? null : _inspect,
                   icon: const Icon(Icons.search_rounded, size: 18),
                   label: const Text('Inspect'),
@@ -392,21 +375,24 @@ class _ModelPageState extends State<ModelPage> {
   }
 
   Widget _inspectionCard(ModelProbeResult probe) {
+    final text = Theme.of(context).textTheme;
     final usable = probe.isUsable;
     return SectionCard(
+      icon: usable ? Icons.fact_check_outlined : Icons.block_rounded,
       title: 'What that file is',
       trailing: StatusPill(
-        label: usable ? 'SUPPORTED' : 'CANNOT LOAD',
+        label: usable ? 'Supported' : 'Cannot load',
         color: usable ? VaultColors.accent : VaultColors.danger,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
                 child: MetricTile(
-                  label: 'FORMAT',
+                  label: 'Format',
                   value: probe.format.label.split(' ').first,
                   accent: usable ? VaultColors.accent : VaultColors.danger,
                   footnote: probe.format.label,
@@ -415,7 +401,7 @@ class _ModelPageState extends State<ModelPage> {
               const SizedBox(width: VaultSpace.sm),
               Expanded(
                 child: MetricTile(
-                  label: 'SIZE',
+                  label: 'Size',
                   value: probe.sizeLabel,
                   unavailable: probe.sizeBytes == 0,
                 ),
@@ -428,7 +414,7 @@ class _ModelPageState extends State<ModelPage> {
               // format, at the moment the decision is still reversible.
               Expanded(
                 child: MetricTile(
-                  label: 'BUILT FOR',
+                  label: 'Built for',
                   value: _plannedBackend(probe).label,
                   // Amber, not the greyed-out `unavailable` treatment. An
                   // unknown backend is not a lane the device declined to
@@ -442,41 +428,33 @@ class _ModelPageState extends State<ModelPage> {
           ),
           if (probe.sizeWarning != null) ...[
             const SizedBox(height: VaultSpace.md),
-            _note(probe.sizeWarning!, VaultColors.warn),
+            _note(probe.sizeWarning!, NoticeTone.warn),
           ],
           if (probe.backendWarning != null) ...[
             const SizedBox(height: VaultSpace.md),
-            _note(probe.backendWarning!, VaultColors.warn),
-            const SizedBox(height: VaultSpace.md),
+            _note(probe.backendWarning!, NoticeTone.warn),
+            const SizedBox(height: VaultSpace.lg),
             _backendOverridePicker(),
           ],
           if (probe.magicHex != null) ...[
-            const SizedBox(height: VaultSpace.md),
-            const Text(
-              'FIRST BYTES',
-              style: TextStyle(
-                color: VaultColors.muted,
-                fontSize: 10,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0.8,
-              ),
-            ),
-            const SizedBox(height: VaultSpace.xs),
+            const SizedBox(height: VaultSpace.lg),
+            Text('First bytes', style: text.titleSmall),
+            const SizedBox(height: VaultSpace.sm),
             CodeBlock(probe.magicHex!),
           ],
           if (probe.error != null) ...[
             const SizedBox(height: VaultSpace.md),
-            _note(probe.error!, VaultColors.danger),
+            _note(probe.error!, NoticeTone.danger),
           ],
           if (probe.format.remedy != null) ...[
             const SizedBox(height: VaultSpace.md),
-            _note(probe.format.remedy!, VaultColors.info),
+            _note(probe.format.remedy!, NoticeTone.info),
           ],
           if (usable) ...[
             const SizedBox(height: VaultSpace.lg),
             FilledButton.icon(
               onPressed: _working ? null : _load,
-              icon: const Icon(Icons.memory_rounded, size: 19),
+              icon: const Icon(Icons.memory_rounded, size: 18),
               label: Text(_working ? 'Working…' : 'Load into memory'),
             ),
             const SizedBox(height: VaultSpace.sm),
@@ -489,11 +467,7 @@ class _ModelPageState extends State<ModelPage> {
               // job is to stop a crash.
               '${_planDescription(probe)} Expect tens of seconds and a large '
               'jump in memory use.',
-              style: const TextStyle(
-                color: VaultColors.faint,
-                fontSize: 11,
-                height: 1.45,
-              ),
+              style: text.bodySmall,
             ),
           ],
         ],
@@ -522,8 +496,8 @@ class _ModelPageState extends State<ModelPage> {
   String _backendSource(ModelProbeResult probe) {
     if (_backendOverride != null) return 'you chose this';
     return switch (probe.suggestedBackend) {
-      SuggestedBackend.unknown => 'not stated in filename',
-      _ => 'read from filename',
+      SuggestedBackend.unknown => 'not in filename',
+      _ => 'from filename',
     };
   }
 
@@ -543,7 +517,7 @@ class _ModelPageState extends State<ModelPage> {
     };
   }
 
-  /// Two buttons rather than a dialog.
+  /// Inline choice rather than a dialog.
   ///
   /// The page's whole shape is progressive disclosure — pick, inspect, load —
   /// and a modal asking "CPU or GPU?" would ask for the answer at the worst
@@ -551,119 +525,60 @@ class _ModelPageState extends State<ModelPage> {
   /// waiting. Asking inline, on the card that just told them the filename is
   /// ambiguous, puts the question next to the evidence for it.
   Widget _backendOverridePicker() {
-    Widget option(LlmBackend backend, String detail) {
-      final selected = _backendOverride == backend;
-      return Expanded(
-        child: OutlinedButton(
-          onPressed: _working
-              ? null
-              // Tapping the selected option clears it, so there is a way back
-              // to "I don't know" without re-inspecting the file.
-              : () => setState(
-                    () => _backendOverride = selected ? null : backend,
-                  ),
-          style: OutlinedButton.styleFrom(
-            foregroundColor:
-                selected ? VaultColors.accent : VaultColors.muted,
-            side: BorderSide(
-              color: selected ? VaultColors.accent : VaultColors.border,
-            ),
-            backgroundColor: selected
-                ? VaultColors.accent.withValues(alpha: 0.1)
-                : null,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                backend.name.toUpperCase(),
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              Text(
-                detail,
-                style: const TextStyle(fontSize: 9.5, height: 1.3),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
+    final text = Theme.of(context).textTheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text(
-          'IF YOU KNOW WHICH BUILD THIS IS',
-          style: TextStyle(
-            color: VaultColors.muted,
-            fontSize: 10,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0.8,
-          ),
-        ),
+        Text('If you know which build this is', style: text.titleSmall),
         const SizedBox(height: VaultSpace.sm),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            option(LlmBackend.cpu, 'slower, safer'),
-            const SizedBox(width: VaultSpace.sm),
-            option(LlmBackend.gpu, 'faster, riskier'),
+        SegmentedButton<LlmBackend>(
+          // Deselecting the chosen option returns to "I don't know" without
+          // re-inspecting the file.
+          emptySelectionAllowed: true,
+          showSelectedIcon: false,
+          segments: const [
+            ButtonSegment(
+                value: LlmBackend.cpu, label: Text('CPU · safer')),
+            ButtonSegment(
+                value: LlmBackend.gpu, label: Text('GPU · faster')),
           ],
+          selected: {?_backendOverride},
+          onSelectionChanged: _working
+              ? null
+              : (s) => setState(
+                  () => _backendOverride = s.isEmpty ? null : s.first),
         ),
       ],
     );
   }
 
-  Widget _note(String text, Color color) {
-    return Container(
-      padding: const EdgeInsets.all(VaultSpace.md),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.07),
-        borderRadius: BorderRadius.circular(VaultSpace.radiusSm),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
-      ),
-      child: Text(
-        text,
-        style: const TextStyle(
-          color: VaultColors.muted,
-          fontSize: 11.5,
-          height: 1.5,
-        ),
-      ),
-    );
-  }
+  Widget _note(String message, NoticeTone tone) =>
+      Notice(message: message, tone: tone);
 
-  /// The GGUF / llama.cpp path from the PocketRAG Snapdragon plan, alongside
-  /// the MediaPipe/Gemma card above rather than replacing it — see
-  /// llama_runtime.dart's file header for why the two coexist. Deliberately
-  /// no backend-mismatch warning here the way [_inspectionCard] has one:
-  /// llama.cpp resolves "cpu"/"gpu"/"npu" to a specific device by name on
-  /// the native side, so an unavailable device is a clean load error, never
-  /// the silent-crash risk a MediaPipe backend guess is.
+  /// The GGUF / llama.cpp path. Deliberately no backend-mismatch warning
+  /// here the way [_inspectionCard] has one: llama.cpp resolves
+  /// "cpu"/"gpu"/"npu" to a specific device by name on the native side, so an
+  /// unavailable device is a clean load error, never the silent-crash risk a
+  /// MediaPipe backend guess is.
   Widget _llamaCard() {
     return ListenableBuilder(
       listenable: widget.llama,
       builder: (context, _) {
+        final text = Theme.of(context).textTheme;
         final llama = widget.llama;
-        final (label, color) = switch (llama.state) {
-          LlamaState.ready => ('LOADED', VaultColors.accent),
-          LlamaState.loading => ('LOADING', VaultColors.warn),
-          LlamaState.failed => ('FAILED', VaultColors.danger),
-          LlamaState.unloaded => ('NOT LOADED', VaultColors.faint),
-        };
 
         return SectionCard(
-          title: 'Reasoning model — llama.cpp (GGUF)',
-          subtitle: 'Qwen3 / SmolLM2 / GGUF Gemma, CPU / GPU / NPU — '
-              'independent of the MediaPipe model above.',
-          trailing: StatusPill(
-            label: label,
-            color: color,
-            pulsing: llama.state == LlamaState.loading || llama.isGenerating,
-          ),
+          icon: Icons.developer_board_rounded,
+          title: 'llama.cpp',
+          subtitle: 'GGUF: SmolLM2, Qwen3, Gemma',
+          trailing: switch (llama.state) {
+            LlamaState.ready => const VaultTag('Loaded', selected: true),
+            LlamaState.loading =>
+              const VaultTag('Loading', color: VaultColors.warn),
+            LlamaState.failed =>
+              const VaultTag('Failed', color: VaultColors.danger),
+            LlamaState.unloaded => null,
+          },
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -673,45 +588,47 @@ class _ModelPageState extends State<ModelPage> {
                 autocorrect: false,
                 style: VaultText.mono.copyWith(
                   color: VaultColors.foreground,
-                  fontSize: 12,
+                  fontSize: 13,
                 ),
                 maxLines: 2,
                 minLines: 1,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: 'GGUF path',
                   hintText: '/storage/emulated/0/Download/'
                       'qwen3-1.7b-q4_k_m.gguf',
+                  suffixIcon: IconButton(
+                    tooltip: 'Browse',
+                    onPressed: _llamaWorking ? null : _llamaBrowse,
+                    icon: const Icon(Icons.folder_open_rounded),
+                  ),
                 ),
               ),
+              const SizedBox(height: VaultSpace.lg),
+              Text('Backend', style: text.titleSmall),
               const SizedBox(height: VaultSpace.sm),
-              OutlinedButton.icon(
-                onPressed: _llamaWorking ? null : _llamaBrowse,
-                icon: const Icon(Icons.folder_open_rounded, size: 18),
-                label: const Text('Browse'),
-              ),
-              const SizedBox(height: VaultSpace.md),
-              Row(
-                children: [
-                  for (final backend in LlamaBackend.values) ...[
-                    if (backend != LlamaBackend.values.first)
-                      const SizedBox(width: VaultSpace.sm),
-                    Expanded(child: _llamaBackendButton(backend)),
-                  ],
+              SegmentedButton<LlamaBackend>(
+                showSelectedIcon: false,
+                segments: [
+                  for (final b in LlamaBackend.values)
+                    ButtonSegment(value: b, label: Text(b.label)),
                 ],
+                selected: {_llamaBackend},
+                onSelectionChanged: _llamaWorking
+                    ? null
+                    : (s) => setState(() => _llamaBackend = s.first),
               ),
-              const SizedBox(height: VaultSpace.md),
+              const SizedBox(height: VaultSpace.lg),
               FilledButton.icon(
                 onPressed: _llamaWorking ? null : _llamaLoad,
-                icon: const Icon(Icons.memory_rounded, size: 19),
+                icon: const Icon(Icons.memory_rounded, size: 18),
                 label: Text(_llamaWorking ? 'Working…' : 'Load into memory'),
               ),
-              if (llama.error != null) ...[
-                const SizedBox(height: VaultSpace.md),
-                _note(llama.error!, VaultColors.danger),
-              ],
               if (llama.isReady) ...[
-                const SizedBox(height: VaultSpace.lg),
-                const Divider(height: 1, color: VaultColors.border),
+                const SizedBox(height: VaultSpace.xl),
+                Text('Smoke test', style: text.titleSmall),
+                const SizedBox(height: 2),
+                Text('Raw generation, no retrieval involved.',
+                    style: text.bodySmall),
                 const SizedBox(height: VaultSpace.md),
                 TextField(
                   controller: _llamaPromptController,
@@ -720,14 +637,12 @@ class _ModelPageState extends State<ModelPage> {
                   minLines: 1,
                   decoration: const InputDecoration(
                     labelText: 'Test prompt',
-                    hintText: 'Ask it something, no retrieval involved — '
-                        'this is a raw generation smoke test.',
                   ),
                 ),
                 const SizedBox(height: VaultSpace.sm),
                 OutlinedButton.icon(
                   onPressed: _llamaWorking ? null : _llamaGenerate,
-                  icon: const Icon(Icons.bolt_rounded, size: 18),
+                  icon: const Icon(Icons.play_arrow_rounded, size: 18),
                   label: const Text('Generate'),
                 ),
                 if (_llamaGenerationResult != null) ...[
@@ -739,25 +654,6 @@ class _ModelPageState extends State<ModelPage> {
           ),
         );
       },
-    );
-  }
-
-  Widget _llamaBackendButton(LlamaBackend backend) {
-    final selected = _llamaBackend == backend;
-    return OutlinedButton(
-      onPressed: _llamaWorking ? null : () => setState(() => _llamaBackend = backend),
-      style: OutlinedButton.styleFrom(
-        foregroundColor: selected ? VaultColors.accent : VaultColors.muted,
-        side: BorderSide(
-          color: selected ? VaultColors.accent : VaultColors.border,
-        ),
-        backgroundColor:
-            selected ? VaultColors.accent.withValues(alpha: 0.1) : null,
-      ),
-      child: Text(
-        backend.label,
-        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
-      ),
     );
   }
 
@@ -823,109 +719,117 @@ class _ModelPageState extends State<ModelPage> {
   Widget _roleCard() {
     final slot = widget.reasoner.activeSlot;
     final status = widget.embeddingStatus();
-    final encoderWhere = switch (status.verdict) {
-      AcceleratorVerdict.qnnHtpVerified =>
-        'Running on the Hexagon NPU — QNN HTP verified (${status.detail}).',
-      AcceleratorVerdict.qnnUnavailable =>
-        'QNN unavailable (${status.detail ?? 'no detail'}); running on '
-            '${status.activeBackend}.',
-      AcceleratorVerdict.xnnpackFallback =>
-        'XNNPACK fallback: QNN HTP was rejected (${status.detail ?? 'no detail'}).',
-      AcceleratorVerdict.notAttempted => 'Running on ${status.activeBackend}.',
+    final (encoderTag, encoderColor, encoderWhere) = switch (status.verdict) {
+      AcceleratorVerdict.qnnHtpVerified => (
+          'QNN HTP verified',
+          VaultColors.accent,
+          'Running on the Hexagon NPU (${status.detail}).',
+        ),
+      AcceleratorVerdict.qnnUnavailable => (
+          'QNN unavailable',
+          VaultColors.warn,
+          '${status.detail ?? 'No detail'}. Running on ${status.activeBackend}.',
+        ),
+      AcceleratorVerdict.xnnpackFallback => (
+          'XNNPACK fallback',
+          VaultColors.warn,
+          'QNN HTP was rejected: ${status.detail ?? 'no detail'}.',
+        ),
+      AcceleratorVerdict.notAttempted => (
+          status.activeBackend,
+          VaultColors.muted,
+          'Running on ${status.activeBackend}.',
+        ),
     };
     final reasonerText = slot == null
-        ? 'No reasoner selected. Load a GGUF model (llama.cpp) or a Gemma '
-            '.task bundle (MediaPipe) below; loading one unloads the other.'
+        ? 'No reasoner selected. Load a GGUF model or a Gemma bundle below.'
         : slot.isReady
-            ? '${slot.modelLabel} via ${slot.kind.label} on '
-                '${slot.backendLabel}. Reads the chunks retrieval already '
-                'found and writes them up as a JSON capsule, once per query.'
-            : '${slot.kind.label} is the selected reasoner but is not loaded. '
-                'Queries return the extractive capsule until it is.';
+            ? 'Reads the chunks retrieval found and writes them up as a JSON '
+                'capsule, once per query.'
+            : '${slot.kind.label} is selected but not loaded. Queries return '
+                'the extractive capsule until it is.';
 
     return SectionCard(
-      title: 'How the two models divide the work',
-      subtitle: 'Exactly one reasoner is loaded at a time.',
+      icon: Icons.account_tree_outlined,
+      title: 'On-device pipeline',
+      subtitle: 'Two models, one reasoner at a time',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _role(
-            'MiniLM-L6-v2',
-            'Encoding',
-            'Turns every chunk and every query into a 384-dimension vector. '
-                'Runs on every ingest and every search. Always loaded. '
-                '$encoderWhere',
-            VaultColors.info,
+            step: '1',
+            name: 'MiniLM-L6-v2',
+            job: 'Encode',
+            tag: encoderTag,
+            tagColor: encoderColor,
+            detail: 'Every chunk and query becomes a 384-dim vector. '
+                'Always loaded. $encoderWhere',
           ),
           const SizedBox(height: VaultSpace.sm),
           _role(
-            slot?.isReady ?? false ? slot!.modelLabel : 'Reasoner',
-            'Reasoning',
-            reasonerText,
-            VaultColors.accent,
+            step: '2',
+            name: slot?.isReady ?? false ? slot!.modelLabel : 'Reasoner',
+            job: 'Reason',
+            tag: slot?.isReady ?? false ? slot!.backendLabel : 'Not loaded',
+            tagColor: slot?.isReady ?? false ? VaultColors.accent : VaultColors.faint,
+            detail: reasonerText,
           ),
           const SizedBox(height: VaultSpace.md),
           Text(
-            'Capsule schema $promptVersion. The generator prompt is fixed and '
-            'versioned, so a stored capsule can be traced back to the '
-            'instructions that produced it.',
-            style: const TextStyle(
-              color: VaultColors.faint,
-              fontSize: 11,
-              height: 1.45,
-            ),
+            'Capsule schema $promptVersion. The prompt is fixed and versioned, '
+            'so a stored capsule traces back to the instructions that '
+            'produced it.',
+            style: Theme.of(context).textTheme.bodySmall!
+                .copyWith(color: VaultColors.faint),
           ),
         ],
       ),
     );
   }
 
-  Widget _role(String name, String job, String detail, Color color) {
+  Widget _role({
+    required String step,
+    required String name,
+    required String job,
+    required String tag,
+    required Color tagColor,
+    required String detail,
+  }) {
+    final text = Theme.of(context).textTheme;
     return Container(
       padding: const EdgeInsets.all(VaultSpace.md),
       decoration: BoxDecoration(
         color: VaultColors.surfaceHigh,
-        borderRadius: BorderRadius.circular(VaultSpace.radiusSm),
-        border: Border.all(color: VaultColors.border),
+        borderRadius: BorderRadius.circular(VaultSpace.radiusMd),
       ),
-      child: Column(
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Container(
-                width: 6,
-                height: 6,
-                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-              ),
-              const SizedBox(width: VaultSpace.sm),
-              Text(
-                name,
-                style: const TextStyle(
-                  color: VaultColors.foreground,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const Spacer(),
-              Text(
-                job.toUpperCase(),
-                style: TextStyle(
-                  color: color,
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.8,
-                ),
-              ),
-            ],
+          Container(
+            width: 28,
+            height: 28,
+            alignment: Alignment.center,
+            decoration: const BoxDecoration(
+              color: VaultColors.surfaceHighest,
+              shape: BoxShape.circle,
+            ),
+            child: Text(step, style: text.labelLarge),
           ),
-          const SizedBox(height: VaultSpace.sm),
-          Text(
-            detail,
-            style: const TextStyle(
-              color: VaultColors.faint,
-              fontSize: 11.5,
-              height: 1.5,
+          const SizedBox(width: VaultSpace.md),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('$job · $name',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: text.titleSmall),
+                const SizedBox(height: VaultSpace.xs),
+                VaultTag(tag, color: tagColor),
+                const SizedBox(height: VaultSpace.sm),
+                Text(detail,
+                    style: text.bodyMedium!.copyWith(color: VaultColors.muted)),
+              ],
             ),
           ),
         ],
@@ -942,24 +846,17 @@ class _LoadingBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Column(
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        LinearProgressIndicator(
-          backgroundColor: VaultColors.surfaceHigh,
-          color: VaultColors.accent,
-        ),
-        SizedBox(height: VaultSpace.md),
+        const LinearProgressIndicator(),
+        const SizedBox(height: VaultSpace.md),
         Text(
           'Loading weights into memory. This takes tens of seconds for a '
-          '1.3 GB model and there is no progress signal to report — '
-          'MediaPipe exposes one blocking call, not a callback. The app '
-          'stays responsive because the load runs on its own thread.',
-          style: TextStyle(
-            color: VaultColors.faint,
-            fontSize: 11.5,
-            height: 1.5,
-          ),
+          '1–2 GB model and the runtime reports no progress. The app stays '
+          'responsive because the load runs on its own thread.',
+          style: Theme.of(context).textTheme.bodyMedium!
+              .copyWith(color: VaultColors.muted),
         ),
       ],
     );

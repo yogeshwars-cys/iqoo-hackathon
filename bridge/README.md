@@ -3,6 +3,10 @@
 The laptop half of the co-processor. The phone holds the model and the
 index; this turns local HTTP calls into WebSocket round-trips to it.
 
+> Needs the **`lan`** build of the app (`flutter build apk --release --flavor lan`).
+> The default `airgap` build has no network permission; use
+> [`testdata/vaultlink.py`](testdata/README.md) over the clipboard instead.
+
 ```
   IDE / MCP client / query.py
             │  HTTP  (127.0.0.1:8000)

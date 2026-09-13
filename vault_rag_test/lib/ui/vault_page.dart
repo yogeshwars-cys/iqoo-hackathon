@@ -35,11 +35,16 @@ class VaultPage extends StatefulWidget {
   /// Injectable for widget tests; a platform-backed one is created otherwise.
   final EphemeralClipboard? clipboard;
 
+  /// Pre-populated result, for screenshot and widget tests.
+  @visibleForTesting
+  final ContextCapsule? initialCapsule;
+
   const VaultPage({
     super.key,
     required this.engine,
     required this.reasoner,
     this.clipboard,
+    this.initialCapsule,
   });
 
   @override
@@ -71,6 +76,7 @@ class _VaultPageState extends State<VaultPage> {
   void initState() {
     super.initState();
     _clipboard = widget.clipboard ?? EphemeralClipboard();
+    _capsule = widget.initialCapsule;
     // Android only lets the foreground app read the clipboard, so an expiry
     // that fired while backgrounded is retried when the app comes back.
     _lifecycle = AppLifecycleListener(
@@ -212,7 +218,7 @@ class _VaultPageState extends State<VaultPage> {
       content: Row(
         children: [
           const Icon(Icons.lock_clock_outlined,
-              size: 18, color: VaultColors.accent),
+              size: 18, color: Color(0xFF006D36)),
           const SizedBox(width: VaultSpace.sm),
           Expanded(
             child: Text('Ephemeral buffer active: auto-destructs in '
@@ -232,18 +238,18 @@ class _VaultPageState extends State<VaultPage> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(
         VaultSpace.lg,
-        VaultSpace.md,
+        VaultSpace.sm,
         VaultSpace.lg,
         VaultSpace.xxl,
       ),
       children: [
-        _ingestCard(canIngest),
-        const SizedBox(height: VaultSpace.md),
         _queryCard(),
         if (_capsule != null) ...[
-          const SizedBox(height: VaultSpace.md),
+          const SizedBox(height: VaultSpace.lg),
           _capsuleCard(_capsule!),
         ],
+        const SizedBox(height: VaultSpace.lg),
+        _ingestCard(canIngest),
       ],
     );
   }
@@ -251,77 +257,96 @@ class _VaultPageState extends State<VaultPage> {
   Widget _ingestCard(bool canIngest) {
     return ListenableBuilder(
       listenable: widget.engine,
-      builder: (context, _) => SectionCard(
-        title: 'Corpus',
-        subtitle: '${widget.engine.chunkCount} chunks indexed on this device',
-        trailing: IconButton(
-          tooltip: 'Clear the vault',
-          constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
-          onPressed: widget.engine.isReady && !_busy ? _confirmClear : null,
-          icon: const Icon(Icons.delete_outline, color: VaultColors.muted),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            OutlinedButton.icon(
-              onPressed: widget.engine.isReady && !_busy ? _pickFiles : null,
-              icon: const Icon(Icons.upload_file_rounded, size: 19),
-              label: const Text('Choose files'),
-            ),
-            if (_picked.isNotEmpty) ...[
-              const SizedBox(height: VaultSpace.md),
-              for (final f in _picked)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: VaultSpace.xs),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          f.name,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: VaultColors.foreground,
-                            fontSize: 12.5,
-                          ),
-                        ),
+      builder: (context, _) {
+        final text = Theme.of(context).textTheme;
+        return SectionCard(
+          icon: Icons.folder_rounded,
+          title: 'Corpus',
+          subtitle: '${widget.engine.chunkCount} encrypted chunks on this device',
+          trailing: IconButton(
+            tooltip: 'Clear the vault',
+            onPressed: widget.engine.isReady && !_busy ? _confirmClear : null,
+            icon: const Icon(Icons.delete_outline_rounded),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (_picked.isNotEmpty) ...[
+                for (final f in _picked) _pickedFileRow(f, text),
+                const SizedBox(height: VaultSpace.md),
+              ],
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed:
+                          widget.engine.isReady && !_busy ? _pickFiles : null,
+                      icon: const Icon(Icons.upload_file_rounded, size: 18),
+                      label: Text(_picked.isEmpty ? 'Choose files' : 'Change'),
+                    ),
+                  ),
+                  if (_picked.isNotEmpty) ...[
+                    const SizedBox(width: VaultSpace.sm),
+                    Expanded(
+                      child: FilledButton.icon(
+                        onPressed: canIngest ? _ingest : null,
+                        icon: const Icon(Icons.lock_rounded, size: 18),
+                        label: const Text('Embed'),
                       ),
-                      const SizedBox(width: VaultSpace.sm),
-                      Text(
-                        _fileStatus[f.name] ?? 'pending',
-                        style: TextStyle(
-                          color: (_fileStatus[f.name] ?? '').startsWith('Skip')
-                              ? VaultColors.warn
-                              : VaultColors.faint,
-                          fontSize: 11,
-                        ),
-                      ),
-                    ],
+                    ),
+                  ],
+                ],
+              ),
+              if (_progress.isNotEmpty) ...[
+                const SizedBox(height: VaultSpace.lg),
+                const LinearProgressIndicator(),
+                const SizedBox(height: VaultSpace.sm),
+                Text(_progress, style: text.bodySmall),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _pickedFileRow(PlatformFile f, TextTheme text) {
+    final status = _fileStatus[f.name];
+    final skipped = (status ?? '').startsWith('Skip');
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: VaultSpace.xs),
+      child: Row(
+        children: [
+          Icon(
+            skipped
+                ? Icons.block_rounded
+                : status == null
+                    ? Icons.description_outlined
+                    : Icons.check_circle_outline_rounded,
+            size: 20,
+            color: skipped
+                ? VaultColors.warn
+                : status == null
+                    ? VaultColors.muted
+                    : VaultColors.accent,
+          ),
+          const SizedBox(width: VaultSpace.md),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(f.name,
+                    overflow: TextOverflow.ellipsis, style: text.bodyMedium),
+                Text(
+                  status ?? 'Ready to embed',
+                  style: text.bodySmall!.copyWith(
+                    color: skipped ? VaultColors.warn : VaultColors.faint,
                   ),
                 ),
-              const SizedBox(height: VaultSpace.md),
-              FilledButton.icon(
-                onPressed: canIngest ? _ingest : null,
-                icon: const Icon(Icons.storage_rounded, size: 19),
-                label: const Text('Embed into vault'),
-              ),
-            ],
-            if (_progress.isNotEmpty) ...[
-              const SizedBox(height: VaultSpace.md),
-              const LinearProgressIndicator(
-                backgroundColor: VaultColors.surfaceHigh,
-                color: VaultColors.accent,
-              ),
-              const SizedBox(height: VaultSpace.sm),
-              Text(
-                _progress,
-                style: const TextStyle(
-                  color: VaultColors.muted,
-                  fontSize: 11.5,
-                ),
-              ),
-            ],
-          ],
-        ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -332,13 +357,12 @@ class _VaultPageState extends State<VaultPage> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: VaultColors.surface,
+        icon: const Icon(Icons.delete_outline_rounded),
         title: const Text('Clear the vault?'),
         content: Text(
           'Deletes all ${widget.engine.chunkCount} chunks. The source files '
           'are untouched, but re-embedding them takes as long as it did the '
           'first time.',
-          style: const TextStyle(color: VaultColors.muted, height: 1.5),
         ),
         actions: [
           TextButton(
@@ -358,7 +382,9 @@ class _VaultPageState extends State<VaultPage> {
 
   Widget _queryCard() {
     return SectionCard(
-      title: 'Query',
+      icon: Icons.search_rounded,
+      title: 'Ask the vault',
+      subtitle: 'Retrieval and reasoning run on this phone',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -367,24 +393,25 @@ class _VaultPageState extends State<VaultPage> {
             enabled: widget.engine.isReady && !_busy,
             textInputAction: TextInputAction.search,
             onSubmitted: (_) => _ask(),
-            style: const TextStyle(color: VaultColors.foreground),
+            minLines: 1,
+            maxLines: 3,
             decoration: const InputDecoration(
               hintText: 'What is the maximum notional order limit?',
-              prefixIcon: Icon(Icons.search, color: VaultColors.faint),
             ),
           ),
-          const SizedBox(height: VaultSpace.md),
+          const SizedBox(height: VaultSpace.sm),
           _generateToggle(),
-          const SizedBox(height: VaultSpace.md),
+          const SizedBox(height: VaultSpace.sm),
           FilledButton.icon(
             onPressed: widget.engine.isReady && !_busy ? _ask : null,
             icon: _busy
                 ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: VaultColors.muted),
                   )
-                : const Icon(Icons.bolt_rounded, size: 19),
+                : const Icon(Icons.arrow_upward_rounded, size: 18),
             label: Text(_busy
                 ? ((widget.reasoner.activeSlot?.isBusy ?? false)
                     ? 'Reasoning…'
@@ -393,9 +420,10 @@ class _VaultPageState extends State<VaultPage> {
           ),
           if (_searchError != null) ...[
             const SizedBox(height: VaultSpace.md),
-            Text(
-              _searchError!,
-              style: const TextStyle(color: VaultColors.danger, fontSize: 12),
+            Notice(
+              tone: NoticeTone.danger,
+              title: 'Query failed',
+              message: _searchError!,
             ),
           ],
         ],
@@ -413,54 +441,49 @@ class _VaultPageState extends State<VaultPage> {
     return ListenableBuilder(
       listenable: widget.reasoner,
       builder: (context, _) {
+        final text = Theme.of(context).textTheme;
         final slot = widget.reasoner.activeSlot;
         final ready = slot?.isReady ?? false;
-        return InkWell(
-          onTap: ready ? () => setState(() => _generate = !_generate) : null,
-          borderRadius: BorderRadius.circular(VaultSpace.radiusSm),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: VaultSpace.xs),
-            child: Row(
-              children: [
-                Switch(
-                  value: _generate && ready,
-                  onChanged:
-                      ready ? (v) => setState(() => _generate = v) : null,
-                ),
-                const SizedBox(width: VaultSpace.sm),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Reason over the results',
-                        style: TextStyle(
-                          color: ready
-                              ? VaultColors.foreground
-                              : VaultColors.faint,
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w600,
+        return MergeSemantics(
+          child: InkWell(
+            onTap: ready ? () => setState(() => _generate = !_generate) : null,
+            borderRadius: BorderRadius.circular(VaultSpace.radiusMd),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: VaultSpace.sm),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Reason over the results',
+                          style: text.titleSmall!.copyWith(
+                            color: ready
+                                ? VaultColors.foreground
+                                : VaultColors.faint,
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        ready
-                            ? '${slot!.modelLabel} (${slot.kind.label}) '
-                                'writes the capsule. '
-                                'Adds a few seconds.'
-                            : 'No model loaded — load one on the Model tab. '
-                                'Queries still return a capsule built from '
-                                'retrieval alone.',
-                        style: const TextStyle(
-                          color: VaultColors.faint,
-                          fontSize: 11,
-                          height: 1.4,
+                        const SizedBox(height: 2),
+                        Text(
+                          ready
+                              ? '${slot!.modelLabel} · ${slot.kind.label} '
+                                  'writes the answer'
+                              : 'No model loaded. Load one on the Model tab; '
+                                  'answers are quoted from retrieval until then.',
+                          style: text.bodySmall,
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                  const SizedBox(width: VaultSpace.md),
+                  Switch(
+                    value: _generate && ready,
+                    onChanged:
+                        ready ? (v) => setState(() => _generate = v) : null,
+                  ),
+                ],
+              ),
             ),
           ),
         );
@@ -471,30 +494,26 @@ class _VaultPageState extends State<VaultPage> {
   Widget _capsuleCard(ContextCapsule capsule) {
     final generation = capsule.generation;
     return SectionCard(
+      icon: Icons.inventory_2_outlined,
       title: 'Context capsule',
       subtitle: generation.ran
-          ? '${generation.model} · ${generation.backend} · '
-              '${generation.elapsedMs ?? 0} ms'
+          ? '${generation.backend} · ${_seconds(generation.elapsedMs ?? 0)}'
           : 'Retrieval only · ${capsule.retrieval['latency_ms']} ms',
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           IconButton(
             tooltip: _showRawJson ? 'Show formatted' : 'Show raw JSON',
-            constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+            isSelected: _showRawJson,
             onPressed: () => setState(() => _showRawJson = !_showRawJson),
-            icon: Icon(
-              _showRawJson ? Icons.view_agenda_outlined : Icons.data_object,
-              color: _showRawJson ? VaultColors.accent : VaultColors.muted,
-              size: 20,
-            ),
+            icon: const Icon(Icons.data_object_rounded),
+            selectedIcon:
+                const Icon(Icons.data_object_rounded, color: VaultColors.accent),
           ),
           IconButton(
-            tooltip: 'Copy capsule JSON',
-            constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+            tooltip: 'Copy capsule (clears in ${kClipboardTtl.inSeconds}s)',
             onPressed: _copyResults,
-            icon: const Icon(Icons.copy_rounded,
-                color: VaultColors.muted, size: 20),
+            icon: const Icon(Icons.copy_rounded),
           ),
         ],
       ),
@@ -503,7 +522,7 @@ class _VaultPageState extends State<VaultPage> {
         children: [
           _ephemeralBanner(),
           _provenanceRow(capsule),
-          const SizedBox(height: VaultSpace.md),
+          const SizedBox(height: VaultSpace.lg),
           _showRawJson
               ? CodeBlock(capsule.toPrettyJson())
               : _capsuleBody(capsule),
@@ -511,6 +530,9 @@ class _VaultPageState extends State<VaultPage> {
       ),
     );
   }
+
+  static String _seconds(int ms) =>
+      ms < 1000 ? '$ms ms' : '${(ms / 1000).toStringAsFixed(1)} s';
 
   /// Live countdown while a copied capsule is still on the clipboard, then a
   /// one-line outcome. Text carries the state; the bar only reinforces it.
@@ -522,33 +544,33 @@ class _VaultPageState extends State<VaultPage> {
         final outcome = _clipboard.lastOutcome;
         if (!active && outcome == null) return const SizedBox.shrink();
 
-        final (IconData icon, Color color, String text) = active
+        final (IconData icon, NoticeTone tone, String text) = active
             ? (
                 Icons.lock_clock_outlined,
-                VaultColors.accent,
-                'Ephemeral buffer active: auto-destructs in '
-                    '${_clipboard.secondsRemaining}s',
+                NoticeTone.success,
+                'On the clipboard for ${_clipboard.secondsRemaining} more '
+                    'seconds, then scrubbed.',
               )
             : switch (outcome!) {
                 ScrubOutcome.cleared => (
-                    Icons.check_circle_outline,
-                    VaultColors.muted,
+                    Icons.check_circle_outline_rounded,
+                    NoticeTone.neutral,
                     'Capsule removed from the clipboard.',
                   ),
                 ScrubOutcome.replaced => (
-                    Icons.info_outline,
-                    VaultColors.muted,
+                    Icons.info_outline_rounded,
+                    NoticeTone.neutral,
                     'Clipboard changed since the copy, so it was left untouched.',
                   ),
                 ScrubOutcome.unreadable => (
                     Icons.schedule_rounded,
-                    VaultColors.warn,
+                    NoticeTone.warn,
                     'Clipboard unreadable in the background; will scrub on '
                         'return if unchanged.',
                   ),
                 ScrubOutcome.superseded => (
-                    Icons.info_outline,
-                    VaultColors.muted,
+                    Icons.info_outline_rounded,
+                    NoticeTone.neutral,
                     'Superseded by a newer copy.',
                   ),
               };
@@ -558,49 +580,26 @@ class _VaultPageState extends State<VaultPage> {
           liveRegion: true,
           label: text,
           child: ExcludeSemantics(
-            child: Container(
-              margin: const EdgeInsets.only(bottom: VaultSpace.md),
-              padding: const EdgeInsets.all(VaultSpace.md),
-              decoration: BoxDecoration(
-                color: color.withValues(alpha: 0.07),
-                borderRadius: BorderRadius.circular(VaultSpace.radiusSm),
-                border: Border.all(color: color.withValues(alpha: 0.3)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
-                    children: [
-                      Icon(icon, size: 16, color: color),
-                      const SizedBox(width: VaultSpace.sm),
-                      Expanded(
-                        child: Text(
-                          text,
-                          style: TextStyle(
-                            color: active ? VaultColors.foreground : color,
-                            fontSize: 12,
-                            height: 1.4,
-                          ),
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: VaultSpace.md),
+              child: Notice(
+                tone: tone,
+                icon: icon,
+                title: active ? 'Ephemeral buffer active' : null,
+                message: text,
+                action: active
+                    ? ClipRRect(
+                        borderRadius: BorderRadius.circular(2),
+                        child: TweenAnimationBuilder<double>(
+                          tween: Tween(end: _clipboard.fractionRemaining),
+                          duration: reduceMotion
+                              ? Duration.zero
+                              : const Duration(milliseconds: 250),
+                          builder: (context, value, _) =>
+                              LinearProgressIndicator(value: value),
                         ),
-                      ),
-                    ],
-                  ),
-                  if (active) ...[
-                    const SizedBox(height: VaultSpace.sm),
-                    TweenAnimationBuilder<double>(
-                      tween: Tween(end: _clipboard.fractionRemaining),
-                      duration: reduceMotion
-                          ? Duration.zero
-                          : const Duration(milliseconds: 250),
-                      builder: (context, value, _) => LinearProgressIndicator(
-                        value: value,
-                        minHeight: 3,
-                        backgroundColor: VaultColors.surfaceHigh,
-                        color: VaultColors.accent,
-                      ),
-                    ),
-                  ],
-                ],
+                      )
+                    : null,
               ),
             ),
           ),
@@ -609,7 +608,7 @@ class _VaultPageState extends State<VaultPage> {
     );
   }
 
-  /// Gate taken and signature state, stated without overclaiming.
+  /// Answer path and signature state, stated without overclaiming.
   Widget _provenanceRow(ContextCapsule capsule) {
     final p = capsule.provenance;
     final signed = p?.isSigned ?? false;
@@ -617,46 +616,55 @@ class _VaultPageState extends State<VaultPage> {
     if (p == null) {
       signature = 'Not signed';
     } else if (signed) {
-      signature = 'Signed · ${p.enclave}';
+      signature = 'Signed · ${p.keySecurityLevel == 'strongbox' ? 'StrongBox' : p.enclave}';
     } else if (p.signatureAlgorithm == 'MOCK-UNSIGNED') {
-      signature = 'Mock signature (no keystore)';
+      signature = 'Mock signature';
     } else {
-      signature = 'Signing failed · ${p.signatureError ?? "unknown"}';
+      signature = 'Signing failed';
     }
     return Wrap(
       spacing: VaultSpace.sm,
-      runSpacing: VaultSpace.xs,
+      runSpacing: VaultSpace.sm,
       children: [
-        StatusPill(
-          label: switch (capsule.gatingPath) {
-            GatingPath.llmSynthesized => 'LLM ANSWER',
-            GatingPath.extractiveFallback => 'RETRIEVAL ONLY',
+        VaultTag(
+          switch (capsule.gatingPath) {
+            GatingPath.llmSynthesized => 'Model answer',
+            GatingPath.extractiveFallback => 'Retrieval only',
           },
+          icon: capsule.gatingPath == GatingPath.llmSynthesized
+              ? Icons.auto_awesome_rounded
+              : Icons.format_quote_rounded,
           color: VaultColors.info,
         ),
-        StatusPill(
-          label: signature.toUpperCase(),
+        VaultTag(
+          signature,
+          icon: signed ? Icons.verified_user_rounded : Icons.gpp_maybe_outlined,
           color: signed ? VaultColors.accent : VaultColors.warn,
         ),
+        if (p != null && !signed && p.signatureError != null)
+          Text(p.signatureError!,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall!
+                  .copyWith(color: VaultColors.warn)),
       ],
     );
   }
 
   Widget _capsuleBody(ContextCapsule capsule) {
+    final text = Theme.of(context).textTheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _answerBlock(capsule),
         if (capsule.keyFacts.isNotEmpty) ...[
-          const SizedBox(height: VaultSpace.lg),
-          _label('KEY FACTS'),
-          const SizedBox(height: VaultSpace.sm),
+          const SizedBox(height: VaultSpace.xl),
+          _label('Key facts'),
           for (final fact in capsule.keyFacts) _factTile(fact),
         ],
         if (capsule.caveats.isNotEmpty) ...[
           const SizedBox(height: VaultSpace.lg),
-          _label('CAVEATS'),
-          const SizedBox(height: VaultSpace.sm),
+          _label('Caveats'),
           for (final caveat in capsule.caveats)
             Padding(
               padding: const EdgeInsets.only(bottom: VaultSpace.xs),
@@ -664,20 +672,15 @@ class _VaultPageState extends State<VaultPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Padding(
-                    padding: EdgeInsets.only(top: 3),
-                    child: Icon(Icons.info_outline,
-                        size: 12, color: VaultColors.faint),
+                    padding: EdgeInsets.only(top: 2),
+                    child: Icon(Icons.info_outline_rounded,
+                        size: 16, color: VaultColors.muted),
                   ),
                   const SizedBox(width: VaultSpace.sm),
                   Expanded(
-                    child: Text(
-                      caveat,
-                      style: const TextStyle(
-                        color: VaultColors.faint,
-                        fontSize: 11.5,
-                        height: 1.45,
-                      ),
-                    ),
+                    child: Text(caveat,
+                        style: text.bodyMedium!
+                            .copyWith(color: VaultColors.muted)),
                   ),
                 ],
               ),
@@ -685,32 +688,19 @@ class _VaultPageState extends State<VaultPage> {
         ],
         if (capsule.generation.parseError != null) ...[
           const SizedBox(height: VaultSpace.md),
-          Container(
-            padding: const EdgeInsets.all(VaultSpace.md),
-            decoration: BoxDecoration(
-              color: VaultColors.warn.withValues(alpha: 0.07),
-              borderRadius: BorderRadius.circular(VaultSpace.radiusSm),
-              border:
-                  Border.all(color: VaultColors.warn.withValues(alpha: 0.3)),
-            ),
-            child: Text(
-              capsule.generation.parseError!,
-              style: const TextStyle(
-                color: VaultColors.muted,
-                fontSize: 11,
-                height: 1.45,
-              ),
-            ),
+          Notice(
+            tone: NoticeTone.warn,
+            title: 'Model output was not valid JSON',
+            message: capsule.generation.parseError!,
           ),
         ],
-        const SizedBox(height: VaultSpace.lg),
-        _label('RETRIEVED CONTEXT'),
-        const SizedBox(height: VaultSpace.sm),
+        const SizedBox(height: VaultSpace.xl),
+        _label('Retrieved context · ${capsule.context.length}'),
         if (capsule.context.isEmpty)
           const EmptyState(
             icon: Icons.inbox_outlined,
             title: 'Nothing indexed yet',
-            message: 'Add files above, then ask again.',
+            message: 'Add files in Corpus below, then ask again.',
           )
         else
           for (final chunk in capsule.context) _chunkTile(chunk),
@@ -718,32 +708,31 @@ class _VaultPageState extends State<VaultPage> {
     );
   }
 
-  Widget _label(String text) => Text(
-        text,
-        style: const TextStyle(
-          color: VaultColors.muted,
-          fontSize: 10,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 0.8,
+  Widget _label(String label) => Padding(
+        padding: const EdgeInsets.only(bottom: VaultSpace.sm),
+        child: Semantics(
+          header: true,
+          child: Text(label, style: Theme.of(context).textTheme.titleSmall),
         ),
       );
 
   Widget _answerBlock(ContextCapsule capsule) {
+    final text = Theme.of(context).textTheme;
     final generated =
         capsule.generation.ran && capsule.generation.parseError == null;
-    final color = switch (capsule.confidence) {
-      CapsuleConfidence.high => VaultColors.accent,
-      CapsuleConfidence.medium => VaultColors.info,
-      CapsuleConfidence.low => VaultColors.warn,
-      CapsuleConfidence.none => VaultColors.faint,
+    final (Color color, String confidence) = switch (capsule.confidence) {
+      CapsuleConfidence.high => (VaultColors.accent, 'High confidence'),
+      CapsuleConfidence.medium => (VaultColors.info, 'Medium confidence'),
+      CapsuleConfidence.low => (VaultColors.warn, 'Low confidence'),
+      CapsuleConfidence.none => (VaultColors.faint, 'No confidence'),
     };
 
     return Container(
-      padding: const EdgeInsets.all(VaultSpace.md),
+      padding: const EdgeInsets.all(VaultSpace.lg),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.07),
-        borderRadius: BorderRadius.circular(VaultSpace.radiusSm),
-        border: Border.all(color: color.withValues(alpha: 0.35)),
+        color: VaultColors.surfaceHigh,
+        borderRadius: BorderRadius.circular(VaultSpace.radiusMd),
+        border: Border(left: BorderSide(color: color, width: 3)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -751,57 +740,40 @@ class _VaultPageState extends State<VaultPage> {
           Row(
             children: [
               Icon(
-                generated ? Icons.auto_awesome : Icons.format_quote_rounded,
-                size: 14,
+                generated
+                    ? Icons.auto_awesome_rounded
+                    : Icons.format_quote_rounded,
+                size: 18,
                 color: color,
               ),
               const SizedBox(width: VaultSpace.sm),
-              Text(
-                generated ? 'GENERATED' : 'EXTRACTED',
-                style: TextStyle(
-                  color: color,
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.8,
-                ),
-              ),
+              Text(generated ? 'Answer' : 'Extracted answer',
+                  style: text.labelLarge!.copyWith(color: color)),
               const Spacer(),
-              Text(
-                'confidence ${capsule.confidence.name}',
-                style: const TextStyle(
-                  color: VaultColors.faint,
-                  fontSize: 10,
-                ),
-              ),
+              Text(confidence, style: text.labelMedium!.copyWith(
+                  color: VaultColors.muted)),
             ],
           ),
-          const SizedBox(height: VaultSpace.sm),
+          const SizedBox(height: VaultSpace.md),
           SelectableText(
             capsule.answer,
-            style: TextStyle(
-              color: VaultColors.foreground,
-              fontSize: 13.5,
-              height: 1.55,
-              fontFamily: generated ? null : 'monospace',
-            ),
+            style: generated
+                ? text.bodyLarge
+                : VaultText.mono.copyWith(
+                    fontSize: 14, height: 1.5, color: VaultColors.foreground),
           ),
           // Both provenance lines matter, for opposite reasons: a generated
           // answer is prose a model wrote and needs the caveat, while an
           // extracted one is a verbatim quote and needs to say so to be
           // trusted at all.
-          const SizedBox(height: VaultSpace.sm),
+          const SizedBox(height: VaultSpace.md),
           Text(
             generated
                 ? 'Written by the on-device model from the context below. '
-                    'Facts it quotes are checked against that context — see '
-                    'the badges underneath.'
+                    'Quoted facts are checked against that context.'
                 : 'Quoted verbatim from the indexed file. No model wrote '
                     'this.',
-            style: const TextStyle(
-              color: VaultColors.faint,
-              fontSize: 10.5,
-              height: 1.4,
-            ),
+            style: text.bodySmall!.copyWith(color: VaultColors.faint),
           ),
         ],
       ),
@@ -809,14 +781,14 @@ class _VaultPageState extends State<VaultPage> {
   }
 
   Widget _factTile(CapsuleFact fact) {
+    final text = Theme.of(context).textTheme;
     return Padding(
       padding: const EdgeInsets.only(bottom: VaultSpace.sm),
       child: Container(
         padding: const EdgeInsets.all(VaultSpace.md),
         decoration: BoxDecoration(
           color: VaultColors.surfaceHigh,
-          borderRadius: BorderRadius.circular(VaultSpace.radiusSm),
-          border: Border.all(color: VaultColors.border),
+          borderRadius: BorderRadius.circular(VaultSpace.radiusMd),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -824,16 +796,7 @@ class _VaultPageState extends State<VaultPage> {
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: Text(
-                    fact.fact,
-                    style: const TextStyle(
-                      color: VaultColors.foreground,
-                      fontSize: 12.5,
-                      height: 1.45,
-                    ),
-                  ),
-                ),
+                Expanded(child: Text(fact.fact, style: text.bodyMedium)),
                 const SizedBox(width: VaultSpace.sm),
                 // The quote either occurs in the retrieved text or it does
                 // not. This badge is a substring check, not a judgement, so
@@ -843,16 +806,28 @@ class _VaultPageState extends State<VaultPage> {
             ),
             if (fact.verbatim != null) ...[
               const SizedBox(height: VaultSpace.sm),
-              CodeBlock(fact.verbatim!, maxLines: 3),
+              Text(
+                '“${fact.verbatim!}”',
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                style: VaultText.mono.copyWith(
+                    fontSize: 12.5, height: 1.5, color: VaultColors.muted),
+              ),
             ],
             if (fact.source != null) ...[
-              const SizedBox(height: VaultSpace.xs),
-              Text(
-                fact.source!,
-                style: const TextStyle(
-                  color: VaultColors.faint,
-                  fontSize: 10,
-                ),
+              const SizedBox(height: VaultSpace.sm),
+              Row(
+                children: [
+                  const Icon(Icons.description_outlined,
+                      size: 14, color: VaultColors.faint),
+                  const SizedBox(width: VaultSpace.xs),
+                  Expanded(
+                    child: Text(fact.source!,
+                        overflow: TextOverflow.ellipsis,
+                        style: text.bodySmall!
+                            .copyWith(color: VaultColors.faint)),
+                  ),
+                ],
               ),
             ],
           ],
@@ -861,67 +836,43 @@ class _VaultPageState extends State<VaultPage> {
     );
   }
 
-  Widget _verifyBadge(bool verified) {
-    final color = verified ? VaultColors.accent : VaultColors.warn;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.13),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withValues(alpha: 0.4)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            verified ? Icons.verified_outlined : Icons.help_outline,
-            size: 11,
-            color: color,
-          ),
-          const SizedBox(width: 4),
-          Text(
-            verified ? 'in source' : 'not found',
-            style: TextStyle(
-              color: color,
-              fontSize: 9.5,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _verifyBadge(bool verified) => VaultTag(
+        verified ? 'In source' : 'Not found',
+        icon: verified ? Icons.check_rounded : Icons.help_outline_rounded,
+        color: verified ? VaultColors.accent : VaultColors.warn,
+      );
 
   Widget _chunkTile(RetrievedChunk chunk) {
+    final text = Theme.of(context).textTheme;
     final preview = chunk.content.length > 260
         ? '${chunk.content.substring(0, 260)}…'
         : chunk.content;
 
     return Padding(
-      padding: const EdgeInsets.only(bottom: VaultSpace.sm),
+      padding: const EdgeInsets.only(bottom: VaultSpace.md),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
+              const Icon(Icons.description_outlined,
+                  size: 16, color: VaultColors.muted),
+              const SizedBox(width: VaultSpace.sm),
               Expanded(
                 child: Text(
                   chunk.fileName,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: VaultColors.foreground,
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w600,
-                  ),
+                  style: text.labelLarge,
                 ),
               ),
               const SizedBox(width: VaultSpace.sm),
-              Text(
-                chunk.score.toStringAsFixed(3),
-                style: VaultText.mono.copyWith(
-                  color: VaultColors.info,
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.w600,
+              Semantics(
+                label: 'similarity ${chunk.score.toStringAsFixed(3)}',
+                excludeSemantics: true,
+                child: Text(
+                  chunk.score.toStringAsFixed(3),
+                  style: VaultText.mono
+                      .copyWith(color: VaultColors.info, fontSize: 13),
                 ),
               ),
             ],

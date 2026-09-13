@@ -59,13 +59,14 @@ import 'telemetry/compute_telemetry.dart';
 import 'telemetry/device_info.dart';
 import 'telemetry/llm_benchmark_runner.dart';
 import 'telemetry/pipeline_benchmark_runner.dart';
+import 'ui/app_chrome.dart';
 import 'ui/bridge_page.dart';
 import 'ui/link_page.dart';
 import 'ui/model_page.dart';
 import 'ui/stats_page.dart';
+import 'ui/system_screens.dart';
 import 'ui/theme.dart';
 import 'ui/vault_page.dart';
-import 'ui/widgets/common.dart';
 
 /// True for every build except the `lan` flavor — including builds with no
 /// flavor at all, so the safe answer is the default. The Android manifest is
@@ -78,7 +79,7 @@ void main() {
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.light,
-    systemNavigationBarColor: VaultColors.surface,
+    systemNavigationBarColor: VaultColors.surfaceContainer,
     systemNavigationBarIconBrightness: Brightness.light,
   ));
   runApp(const CoProcessorApp());
@@ -284,9 +285,9 @@ class _AppShellState extends State<AppShell> {
 
   @override
   Widget build(BuildContext context) {
-    if (!_bootstrapped) return const _BootScreen();
+    if (!_bootstrapped) return const BootScreen();
     if (_bootstrapError != null || _engine.state == EngineState.failed) {
-      return _FailureScreen(
+      return FailureScreen(
         message: _bootstrapError ?? '${_engine.error}',
         onRetry: () {
           setState(() {
@@ -298,35 +299,21 @@ class _AppShellState extends State<AppShell> {
       );
     }
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Vault Co-Processor'),
-        actions: [
-          // Link state is visible from every screen, not just the bridge
-          // tab — it is the one piece of status that changes what the app
-          // is doing while you are looking somewhere else.
-          ListenableBuilder(
-            listenable: _bridge,
-            builder: (context, _) => Padding(
-              padding: const EdgeInsets.only(right: VaultSpace.lg),
-              child: StatusPill(
-                label: _bridge.isConnected
-                    ? 'LINKED'
-                    : (kAirGapped ? 'AIR-GAP' : 'LOCAL'),
-                color: _bridge.isConnected
-                    ? VaultColors.accent
-                    : VaultColors.faint,
-                pulsing: _bridge.isConnected,
-              ),
-            ),
-          ),
-        ],
-      ),
-      body: SafeArea(
-        top: false,
-        child: IndexedStack(
-          index: _tab,
-          children: [
+    return ListenableBuilder(
+      listenable: _bridge,
+      // Link state is visible from every screen, not just the bridge tab —
+      // it is the one piece of status that changes what the app is doing
+      // while you are looking somewhere else.
+      builder: (context, _) => VaultAppChrome(
+        index: _tab,
+        onSelect: (i) => setState(() => _tab = i),
+        statusLabel: _bridge.isConnected
+            ? 'Linked'
+            : (kAirGapped ? 'Air-gap' : 'Local'),
+        statusColor:
+            _bridge.isConnected ? VaultColors.accent : VaultColors.faint,
+        statusPulsing: _bridge.isConnected,
+        pages: [
             VaultPage(engine: _engine, reasoner: _reasoner),
             ModelPage(
               llm: _llm,
@@ -349,7 +336,7 @@ class _AppShellState extends State<AppShell> {
               },
             ),
             if (kAirGapped)
-              const _AirGapNotice()
+              AirGapPage(onOpenLink: () => setState(() => _tab = 3))
             else
               BridgePage(client: _bridge, documentsPath: _documentsPath),
             LinkPage(link: _link),
@@ -362,151 +349,7 @@ class _AppShellState extends State<AppShell> {
               vocabText: _vocabText,
               pipeline: _pipelineBenchmark,
             ),
-          ],
-        ),
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _tab,
-        onDestinationSelected: (i) => setState(() => _tab = i),
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.folder_outlined),
-            selectedIcon: Icon(Icons.folder_rounded),
-            label: 'Vault',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.memory_outlined),
-            selectedIcon: Icon(Icons.memory_rounded),
-            label: 'Model',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.hub_outlined),
-            selectedIcon: Icon(Icons.hub_rounded),
-            label: 'Bridge',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.content_paste_outlined),
-            selectedIcon: Icon(Icons.content_paste_rounded),
-            label: 'Link',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.insights_outlined),
-            selectedIcon: Icon(Icons.insights_rounded),
-            label: 'Stats',
-          ),
         ],
-      ),
-    );
-  }
-}
-
-/// Shown in place of the Bridge tab in the air-gapped build.
-class _AirGapNotice extends StatelessWidget {
-  const _AirGapNotice();
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(VaultSpace.lg),
-      children: const [
-        SectionCard(
-          title: 'Air-gapped build',
-          subtitle: 'This APK requests no network permission, so the LAN '
-              'bridge is not available. Use VaultLink on the Link tab, or '
-              'install the lan flavor for the WebSocket bridge.',
-          child: CodeBlock(
-              'flutter build apk --release --flavor lan'),
-        ),
-      ],
-    );
-  }
-}
-
-/// Model load takes about half a second and is the only unavoidable wait.
-/// It says what it is doing, because a blank screen with a spinner on a
-/// cold start reads as a hang.
-class _BootScreen extends StatelessWidget {
-  const _BootScreen();
-
-  @override
-  Widget build(BuildContext context) {
-    return const Scaffold(
-      body: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SizedBox(
-              width: 26,
-              height: 26,
-              child: CircularProgressIndicator(
-                strokeWidth: 2.5,
-                color: VaultColors.accent,
-              ),
-            ),
-            SizedBox(height: VaultSpace.lg),
-            Text(
-              'Loading the encoder',
-              style: TextStyle(
-                color: VaultColors.foreground,
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            SizedBox(height: VaultSpace.xs),
-            Text(
-              'Selecting the fastest available delegate',
-              style: TextStyle(color: VaultColors.faint, fontSize: 12),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _FailureScreen extends StatelessWidget {
-  final String message;
-  final VoidCallback onRetry;
-
-  const _FailureScreen({required this.message, required this.onRetry});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(VaultSpace.xl),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Icon(Icons.error_outline,
-                  color: VaultColors.danger, size: 34),
-              const SizedBox(height: VaultSpace.lg),
-              const Text(
-                'The encoder did not load',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: VaultColors.foreground,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: VaultSpace.md),
-              // The full error, verbatim. Every realistic cause here is a
-              // build or export problem (missing asset, wrong input dtype,
-              // no working delegate) and the exact text is what identifies
-              // which — a friendly paraphrase would throw that away.
-              CodeBlock(message),
-              const SizedBox(height: VaultSpace.lg),
-              FilledButton.icon(
-                onPressed: onRetry,
-                icon: const Icon(Icons.refresh_rounded, size: 19),
-                label: const Text('Retry'),
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }
