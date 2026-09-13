@@ -1,4 +1,4 @@
-# Vault — private RAG on the iQOO 15
+# Vault — private AI environment on the iQOO 15
 
 **Your documents stay on the phone. Your laptop gets a signed answer.**
 
