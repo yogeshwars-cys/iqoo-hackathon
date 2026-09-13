@@ -55,3 +55,8 @@
 # both the class name and its method names/signatures must survive R8
 # unrenamed, or the lookup and the binding silently stop matching.
 -keep class com.example.vault_rag_test.LlamaEngine { *; }
+
+# Qualcomm QNN LiteRT delegate. Its JNI library binds natives by class and
+# method name, so R8 renaming would break it at delegate-creation time.
+-keep class com.qualcomm.qti.** { *; }
+-dontwarn com.qualcomm.qti.**

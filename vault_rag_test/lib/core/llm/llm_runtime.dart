@@ -31,6 +31,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import '../compute_ledger.dart';
 import 'model_probe.dart';
 
 const _channel = MethodChannel('vault/llm');
@@ -71,6 +72,11 @@ class LlmRuntime extends ChangeNotifier {
   /// embedding. A callback rather than an import, keeping core/ free of a
   /// dependency on telemetry/.
   void Function(int micros)? onGeneration;
+
+  /// Receives a lease per generation on the backend MediaPipe actually
+  /// loaded on (its `load` succeeded there; there is no silent fallback
+  /// after load). MediaPipe has no NPU path, so this is only ever GPU or CPU.
+  ComputeLedger ledger = const NullComputeLedger();
 
   LlmState _state = LlmState.unloaded;
   String? _error;
@@ -367,6 +373,11 @@ class LlmRuntime extends ChangeNotifier {
       _isGenerating = true;
       _notify();
 
+      final lease = ledger.begin(
+        _backend == LlmBackend.gpu ? ComputeHardware.gpu : ComputeHardware.cpu,
+        'mediapipe',
+        evidence: 'mediapipe load succeeded on ${_backend?.name}',
+      );
       final stopwatch = Stopwatch()..start();
       try {
         final result = await _channel.invokeMapMethod<String, dynamic>(
@@ -386,6 +397,7 @@ class LlmRuntime extends ChangeNotifier {
         stopwatch.stop();
         completer.completeError(e, st);
       } finally {
+        lease.end();
         _isGenerating = false;
         _notify();
       }

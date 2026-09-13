@@ -39,6 +39,22 @@
         android:label="Vault Co-Processor"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <!-- Vendor (partition) libraries an app may only load when declared,
+             on Android 12+ (targetSdk >= 31). required="false": the app
+             installs and runs everywhere; the accelerator path reports
+             "unavailable" instead of the install failing.
+
+             libcdsprpc.so  FastRPC to the Hexagon DSP. libQnnHtpV81Stub.so
+                            links against it; without this entry the QNN HTP
+                            delegate cannot open a session on the NPU.
+             libOpenCL.so   Adreno OpenCL, used by llama.cpp's GGML_OPENCL
+                            backend for GPU prefill/decode. -->
+        <uses-native-library
+            android:name="libcdsprpc.so"
+            android:required="false" />
+        <uses-native-library
+            android:name="libOpenCL.so"
+            android:required="false" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

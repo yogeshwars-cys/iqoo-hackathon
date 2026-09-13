@@ -40,7 +40,12 @@ library;
 
 import 'dart:math' as math;
 import 'dart:typed_data';
+
 import 'package:tflite_flutter/tflite_flutter.dart';
+
+import 'compute_ledger.dart';
+import 'qnn/qnn_acceptance.dart';
+import 'qnn/qnn_htp_delegate.dart';
 import 'tokenizer.dart';
 
 abstract class EmbeddingService {
@@ -84,7 +89,90 @@ const int _roleTypes = 2;
 /// This is why backends are an explicit opt-in list rather than something the
 /// service probes on its own: a native crash in a probe is unrecoverable, so
 /// an untested delegate must never be on the default path.
-enum EmbeddingBackend { cpu, xnnpack, gpu, nnapi }
+///
+/// [qnnHtp] is Qualcomm's QNN HTP delegate on the Hexagon NPU (V81 on the
+/// iQOO 15's SM8850). It is on the default path only because it is never
+/// trusted on creation: [MiniLMEmbeddingService.load] accepts it solely after
+/// the coverage / equivalence / latency checks in qnn_acceptance.dart, and
+/// otherwise releases it and continues down the list.
+enum EmbeddingBackend { cpu, xnnpack, gpu, nnapi, qnnHtp }
+
+/// The three outcomes the UI and capsules may report for the encoder's
+/// accelerator. Derived from what the delegate did, never from branding.
+enum AcceleratorVerdict {
+  /// QNN delegate created AND passed coverage, equivalence and latency.
+  qnnHtpVerified('QNN HTP verified'),
+
+  /// QNN could not be created or failed its smoke test on this device/build.
+  qnnUnavailable('QNN unavailable'),
+
+  /// QNN ran but was rejected by validation; XNNPACK serves instead.
+  xnnpackFallback('XNNPACK fallback'),
+
+  /// qnnHtp was not in the backend list (e.g. a benchmark probe).
+  notAttempted('QNN not attempted');
+
+  final String label;
+  const AcceleratorVerdict(this.label);
+}
+
+class EmbeddingAcceleratorStatus {
+  final AcceleratorVerdict verdict;
+
+  /// The backend actually serving embeddings ("QNN HTP", "XNNPACK", "CPU").
+  final String activeBackend;
+  final String? detail;
+  final QnnDecision? decision;
+  final QnnDelegationReport? delegation;
+  final QnnEnvironment? environment;
+
+  const EmbeddingAcceleratorStatus({
+    required this.verdict,
+    required this.activeBackend,
+    this.detail,
+    this.decision,
+    this.delegation,
+    this.environment,
+  });
+
+  static const initial = EmbeddingAcceleratorStatus(
+    verdict: AcceleratorVerdict.notAttempted,
+    activeBackend: 'not loaded',
+  );
+
+  /// Hardware the encoder may be attributed to. NPU only when verified.
+  ComputeHardware get hardware => switch (activeBackend) {
+        'QNN HTP' when verdict == AcceleratorVerdict.qnnHtpVerified =>
+          ComputeHardware.npu,
+        'GPU' => ComputeHardware.gpu,
+        _ => ComputeHardware.cpu,
+      };
+
+  String get label => verdict == AcceleratorVerdict.notAttempted
+      ? activeBackend
+      : verdict.label;
+
+  EmbeddingAcceleratorStatus withActiveBackend(String backend) =>
+      EmbeddingAcceleratorStatus(
+        verdict: verdict,
+        activeBackend: backend,
+        detail: detail,
+        decision: decision,
+        delegation: delegation,
+        environment: environment,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'verdict': verdict.name,
+        'label': label,
+        'active_backend': activeBackend,
+        'hardware': hardware.name,
+        if (detail != null) 'detail': detail,
+        if (decision != null) 'decision': decision!.toJson(),
+        if (delegation != null) 'delegation': delegation!.toJson(),
+        if (environment != null) 'environment': environment!.toJson(),
+      };
+}
 
 class MiniLMEmbeddingService implements EmbeddingService {
   final String modelAssetPath;
@@ -117,6 +205,20 @@ class MiniLMEmbeddingService implements EmbeddingService {
   /// lane on the stats screen with time the model never ran for.
   void Function(int micros)? onInference;
 
+  /// Receives a lease per inference on [acceleratorStatus]'s hardware — NPU
+  /// only after QNN HTP was verified. See compute_ledger.dart.
+  ComputeLedger ledger = const NullComputeLedger();
+
+  /// Device hooks for QNN; injectable so the accept/reject flow is testable.
+  final QnnPlatform qnnPlatform;
+  final QnnAcceptanceCriteria qnnCriteria;
+
+  EmbeddingAcceleratorStatus _status = EmbeddingAcceleratorStatus.initial;
+
+  /// What the encoder is running on and why — "QNN HTP verified",
+  /// "QNN unavailable" or "XNNPACK fallback", with the evidence.
+  EmbeddingAcceleratorStatus get acceleratorStatus => _status;
+
   Interpreter? _interpreter;
   Tokenizer? _tokenizer;
   List<Delegate> _ownedDelegates = const [];
@@ -131,11 +233,14 @@ class MiniLMEmbeddingService implements EmbeddingService {
   MiniLMEmbeddingService({
     this.modelAssetPath = 'assets/models/minilm_l6_v2.tflite',
     this.backendsToTry = const [
+      EmbeddingBackend.qnnHtp,
       EmbeddingBackend.xnnpack,
       EmbeddingBackend.cpu,
     ],
     this.benchmarkAllBackends = false,
     this.threads = 4,
+    this.qnnPlatform = const AndroidQnnPlatform(),
+    this.qnnCriteria = const QnnAcceptanceCriteria(),
   });
 
   @override
@@ -164,14 +269,35 @@ class MiniLMEmbeddingService implements EmbeddingService {
   /// itself has no Flutter-widget-layer dependency and is easy to unit test.
   @override
   Future<void> load({required String vocabText}) async {
+    final report = <String, String>{};
+    Interpreter? best;
+    var bestOwned = <Delegate>[];
+    var bestMicros = 1 << 62;
+    _status = EmbeddingAcceleratorStatus.initial;
+
+    // QNN first, when listed: accepted only through [_tryQnn]'s validation.
+    final wantsQnn = backendsToTry.contains(EmbeddingBackend.qnnHtp);
+    if (wantsQnn) {
+      final qnn = await _tryQnn(vocabText, report);
+      if (qnn != null) {
+        best = qnn.interpreter;
+        bestOwned = qnn.owned;
+        bestMicros = qnn.micros;
+        _backend = 'QNN HTP';
+      }
+      _interpreter = null;
+    }
+
     final candidates =
         <String, InterpreterOptions Function(List<Delegate> owned)>{
-      for (final backend in backendsToTry)
+      for (final backend
+          in backendsToTry.where((b) => b != EmbeddingBackend.qnnHtp))
         switch (backend) {
           EmbeddingBackend.cpu => 'CPU',
           EmbeddingBackend.xnnpack => 'XNNPACK',
           EmbeddingBackend.gpu => 'GPU',
           EmbeddingBackend.nnapi => 'NNAPI',
+          EmbeddingBackend.qnnHtp => 'QNN HTP',
         }: switch (backend) {
             EmbeddingBackend.cpu => (_) =>
                 InterpreterOptions()..threads = threads,
@@ -188,15 +314,13 @@ class MiniLMEmbeddingService implements EmbeddingService {
               },
             EmbeddingBackend.nnapi => (_) =>
                 InterpreterOptions()..useNnApiForAndroid = true,
+            // Filtered out above; handled by _tryQnn.
+            EmbeddingBackend.qnnHtp => (_) => InterpreterOptions(),
           },
     };
 
-    final report = <String, String>{};
-    Interpreter? best;
-    var bestOwned = <Delegate>[];
-    var bestMicros = 1 << 62;
-
     for (final entry in candidates.entries) {
+      if (best != null && !benchmarkAllBackends) break;
       final owned = <Delegate>[];
       Interpreter? candidate;
       try {
@@ -236,8 +360,145 @@ class MiniLMEmbeddingService implements EmbeddingService {
 
     _interpreter = best;
     _ownedDelegates = bestOwned;
+    _status = _status.withActiveBackend(_backend);
     _backendReport =
         report.entries.map((e) => '${e.key} ${e.value}').join(' · ');
+  }
+
+  /// Builds a QNN HTP interpreter and keeps it only if it passes validation
+  /// against an XNNPACK reference. Returns null (with [_status] explaining
+  /// why) when QNN is unavailable or rejected; the caller then continues
+  /// down [backendsToTry], so a QNN failure always lands on XNNPACK/CPU.
+  Future<({Interpreter interpreter, List<Delegate> owned, int micros})?>
+      _tryQnn(String vocabText, Map<String, String> report) async {
+    QnnEnvironment? env;
+    final owned = <Delegate>[];
+    Interpreter? qnn;
+    final since = DateTime.now();
+    try {
+      env = await qnnPlatform.environment();
+      owned.add(qnnPlatform.createDelegate(env));
+      qnn = await Interpreter.fromAsset(modelAssetPath,
+          options: InterpreterOptions()..addDelegate(owned.single));
+      _adopt(qnn, vocabText);
+      _benchmark(); // finite / unit-vector smoke test; throws if invalid
+    } catch (e) {
+      _release(qnn, owned);
+      _interpreter = null;
+      final reason = e is QnnUnavailableException ? e.reason : '$e'.split('\n').first;
+      report['QNN HTP'] = 'unavailable';
+      // tflite_flutter only says "Unable to create interpreter"; the actual
+      // cause is in the delegate's own log, captured for remote diagnosis.
+      QnnDelegationReport? log;
+      if (env != null) {
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        log = await qnnPlatform.delegationReport(since);
+      }
+      _status = EmbeddingAcceleratorStatus(
+        verdict: AcceleratorVerdict.qnnUnavailable,
+        activeBackend: 'not loaded',
+        detail: reason,
+        delegation: log,
+        environment: env,
+      );
+      // ignore: avoid_print
+      print('[vault] QNN HTP unavailable: $reason');
+      return null;
+    }
+
+    // Reference: XNNPACK, independent of backendsToTry, so even a QNN-only
+    // probe is validated rather than trusted.
+    final refOwned = <Delegate>[];
+    Interpreter? reference;
+    QnnDecision decision;
+    QnnDelegationReport delegation = QnnDelegationReport.missing;
+    try {
+      final x = XNNPackDelegate();
+      refOwned.add(x);
+      reference = await Interpreter.fromAsset(modelAssetPath,
+          options: InterpreterOptions()..addDelegate(x));
+
+      // The delegate logs its partition report while the interpreter is
+      // built; give logd a moment to flush before reading it back.
+      for (var attempt = 0; attempt < 3 && !delegation.found; attempt++) {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        delegation = await qnnPlatform.delegationReport(since);
+      }
+
+      final texts = [...qnnValidationPassages, ...qnnValidationQueries];
+      final qnnVectors = [for (final t in texts) _embedWith(qnn, t)];
+      final refVectors = [for (final t in texts) _embedWith(reference, t)];
+
+      final qnnMs = <double>[], refMs = <double>[];
+      for (var i = 0; i < 7; i++) {
+        // Interleaved so both see the same thermal / governor state.
+        _embedWith(qnn, qnnValidationPassages.first);
+        qnnMs.add(qnn.lastNativeInferenceDurationMicroSeconds / 1000);
+        _embedWith(reference, qnnValidationPassages.first);
+        refMs.add(reference.lastNativeInferenceDurationMicroSeconds / 1000);
+      }
+
+      decision = decideQnn(
+        QnnValidationEvidence(
+          delegation: delegation,
+          qnnVectors: qnnVectors,
+          referenceVectors: refVectors,
+          passageCount: qnnValidationPassages.length,
+          qnnLatencyMs: qnnMs,
+          referenceLatencyMs: refMs,
+        ),
+        criteria: qnnCriteria,
+      );
+    } catch (e) {
+      _release(reference, refOwned);
+      _release(qnn, owned);
+      _interpreter = null;
+      report['QNN HTP'] = 'unvalidated';
+      _status = EmbeddingAcceleratorStatus(
+        verdict: AcceleratorVerdict.xnnpackFallback,
+        activeBackend: 'not loaded',
+        detail: 'validation could not run: ${'$e'.split('\n').first}',
+        delegation: delegation,
+        environment: env,
+      );
+      return null;
+    }
+    _release(reference, refOwned);
+
+    if (!decision.accepted) {
+      _release(qnn, owned);
+      _interpreter = null;
+      report['QNN HTP'] = 'rejected';
+      _status = EmbeddingAcceleratorStatus(
+        verdict: AcceleratorVerdict.xnnpackFallback,
+        activeBackend: 'not loaded',
+        detail: decision.rejections.join('; '),
+        decision: decision,
+        delegation: delegation,
+        environment: env,
+      );
+      // ignore: avoid_print
+      print('[vault] QNN HTP rejected: ${decision.rejections.join('; ')}');
+      return null;
+    }
+
+    report['QNN HTP'] = '${decision.qnnMedianMs.toStringAsFixed(1)} ms verified';
+    _status = EmbeddingAcceleratorStatus(
+      verdict: AcceleratorVerdict.qnnHtpVerified,
+      activeBackend: 'QNN HTP',
+      detail: '${delegation.nodesDelegated}/${delegation.nodesTotal} nodes on HTP, '
+          '${delegation.partitions} partition(s); '
+          'min cosine ${decision.minCosine.toStringAsFixed(4)} vs XNNPACK',
+      decision: decision,
+      delegation: delegation,
+      environment: env,
+    );
+    _interpreter = qnn;
+    return (
+      interpreter: qnn,
+      owned: owned,
+      micros: (decision.qnnMedianMs * 1000).round(),
+    );
   }
 
   void _release(Interpreter? interpreter, List<Delegate> delegates) {
@@ -334,15 +595,18 @@ class MiniLMEmbeddingService implements EmbeddingService {
 
   /// Times one inference and checks the result is a finite unit vector.
   ///
-  /// Doubles as the smoke test: it catches the failure mode where a delegate
+  /// Doubles as the smoke test (kept for QNN too): it catches the failure mode where a delegate
   /// loads happily and then returns NaN for every token, which is exactly
   /// what the dynamic-range-quantized export of this model does.
   ///
   /// Returns the native inference time in microseconds, measured on a second
   /// run so lazy allocation on the first does not skew the comparison.
   int _benchmark() {
-    _embedSync('vault retrieval smoke test');
-    final v = _embedSync('vault retrieval smoke test');
+    // _embedWith, not _embedSync: backend selection must not show up in the
+    // telemetry leases as real work on a hardware not yet decided.
+    final it = _interpreter!;
+    _embedWith(it, 'vault retrieval smoke test');
+    final v = _embedWith(it, 'vault retrieval smoke test');
 
     var normSq = 0.0;
     for (final x in v) {
@@ -364,10 +628,30 @@ class MiniLMEmbeddingService implements EmbeddingService {
 
   Float32List _embedSync(String text) {
     final interpreter = _interpreter;
-    final tokenizer = _tokenizer;
-    if (interpreter == null || tokenizer == null) {
+    if (interpreter == null || _tokenizer == null) {
       throw StateError('Call load() before embed().');
     }
+    final lease = ledger.begin(
+      _status.hardware,
+      'minilm',
+      evidence: _status.label,
+    );
+    try {
+      final v = _embedWith(interpreter, text);
+      // Report to the telemetry meter, if one is attached. Reads the native
+      // counter rather than timing the call, for the reason in [onInference].
+      onInference?.call(interpreter.lastNativeInferenceDurationMicroSeconds);
+      return v;
+    } finally {
+      lease.end();
+    }
+  }
+
+  /// One embedding on a specific interpreter — the live one, or the QNN /
+  /// XNNPACK pair during validation (which must not feed telemetry).
+  Float32List _embedWith(Interpreter interpreter, String text) {
+    final tokenizer = _tokenizer;
+    if (tokenizer == null) throw StateError('Call load() before embed().');
 
     final enc = tokenizer.encode(text);
     final byRole = [enc.inputIds, enc.attentionMask, enc.tokenTypeIds];
@@ -377,10 +661,6 @@ class MiniLMEmbeddingService implements EmbeddingService {
     );
 
     interpreter.runInference(inputs);
-
-    // Report to the telemetry meter, if one is attached. Reads the native
-    // counter rather than timing the call, for the reason in [onInference].
-    onInference?.call(interpreter.lastNativeInferenceDurationMicroSeconds);
 
     // Read the output tensor's native buffer directly instead of going
     // through runForMultipleInputs.

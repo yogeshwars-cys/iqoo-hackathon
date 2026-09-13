@@ -22,12 +22,20 @@ import '../core/llm/llama_runtime.dart';
 import '../core/llm/llm_runtime.dart';
 import '../core/llm/model_probe.dart';
 import '../core/llm/capsule_prompt.dart';
+import '../core/embedding_service.dart';
+import '../core/llm/reasoner_coordinator.dart';
 import 'theme.dart';
 import 'widgets/common.dart';
 
 class ModelPage extends StatefulWidget {
   final LlmRuntime llm;
   final LlamaRuntime llama;
+
+  /// Every load goes through here so exactly one reasoner is ever loaded.
+  final ReasonerCoordinator reasoner;
+
+  /// The encoder's verified accelerator, for the role card.
+  final EmbeddingAcceleratorStatus Function() embeddingStatus;
 
   /// Persists the chosen path so it survives a relaunch.
   final Future<void> Function(String path) onRemember;
@@ -44,6 +52,8 @@ class ModelPage extends StatefulWidget {
     super.key,
     required this.llm,
     required this.llama,
+    required this.reasoner,
+    required this.embeddingStatus,
     required this.onRemember,
     required this.rememberedPath,
     required this.onRememberLlama,
@@ -124,7 +134,11 @@ class _ModelPageState extends State<ModelPage> {
     if (path.isEmpty) return;
     setState(() => _working = true);
 
-    final ok = await widget.llm.load(path, backendOverride: _backendOverride);
+    final activation = await widget.reasoner.activate(
+      ReasonerKind.mediapipe,
+      () => widget.llm.load(path, backendOverride: _backendOverride),
+    );
+    final ok = activation.ok;
     if (ok) await widget.onRemember(path);
     if (!mounted) return;
     setState(() => _working = false);
@@ -132,16 +146,21 @@ class _ModelPageState extends State<ModelPage> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(ok
           ? 'Loaded on ${widget.llm.backendLabel.toUpperCase()} in '
-              '${widget.llm.loadMs} ms'
+              '${widget.llm.loadMs} ms${_unloadedNote(activation)}'
           : widget.llm.error ?? 'Load failed'),
       duration: const Duration(seconds: 6),
     ));
   }
 
+  /// " · MediaPipe unloaded" when activating one reasoner evicted the other.
+  static String _unloadedNote(ReasonerActivation a) => a.unloaded.isEmpty
+      ? ''
+      : ' · ${a.unloaded.map((k) => k.label).join(', ')} unloaded (one reasoner at a time)';
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: Listenable.merge([widget.llm, widget.llama]),
+      listenable: Listenable.merge([widget.llm, widget.llama, widget.reasoner]),
       builder: (context, _) => ListView(
         padding: const EdgeInsets.fromLTRB(
           VaultSpace.lg,
@@ -758,7 +777,11 @@ class _ModelPageState extends State<ModelPage> {
       _llamaGenerationResult = null;
     });
 
-    final ok = await widget.llama.load(path, backend: _llamaBackend);
+    final activation = await widget.reasoner.activate(
+      ReasonerKind.llama,
+      () => widget.llama.load(path, backend: _llamaBackend),
+    );
+    final ok = activation.ok;
     if (ok) await widget.onRememberLlama(path, _llamaBackend);
     if (!mounted) return;
     setState(() => _llamaWorking = false);
@@ -766,7 +789,7 @@ class _ModelPageState extends State<ModelPage> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(ok
           ? 'Loaded on ${widget.llama.backend?.label} in '
-              '${widget.llama.loadMs} ms'
+              '${widget.llama.loadMs} ms${_unloadedNote(activation)}'
           : widget.llama.error ?? 'Load failed'),
       duration: const Duration(seconds: 6),
     ));
@@ -798,8 +821,32 @@ class _ModelPageState extends State<ModelPage> {
   }
 
   Widget _roleCard() {
+    final slot = widget.reasoner.activeSlot;
+    final status = widget.embeddingStatus();
+    final encoderWhere = switch (status.verdict) {
+      AcceleratorVerdict.qnnHtpVerified =>
+        'Running on the Hexagon NPU — QNN HTP verified (${status.detail}).',
+      AcceleratorVerdict.qnnUnavailable =>
+        'QNN unavailable (${status.detail ?? 'no detail'}); running on '
+            '${status.activeBackend}.',
+      AcceleratorVerdict.xnnpackFallback =>
+        'XNNPACK fallback: QNN HTP was rejected (${status.detail ?? 'no detail'}).',
+      AcceleratorVerdict.notAttempted => 'Running on ${status.activeBackend}.',
+    };
+    final reasonerText = slot == null
+        ? 'No reasoner selected. Load a GGUF model (llama.cpp) or a Gemma '
+            '.task bundle (MediaPipe) below; loading one unloads the other.'
+        : slot.isReady
+            ? '${slot.modelLabel} via ${slot.kind.label} on '
+                '${slot.backendLabel}. Reads the chunks retrieval already '
+                'found and writes them up as a JSON capsule, once per query. '
+                'Skipped entirely on a tier-1 early exit or a tier-3 miss.'
+            : '${slot.kind.label} is the selected reasoner but is not loaded. '
+                'Queries return the extractive capsule until it is.';
+
     return SectionCard(
       title: 'How the two models divide the work',
+      subtitle: 'Exactly one reasoner is loaded at a time.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -807,16 +854,15 @@ class _ModelPageState extends State<ModelPage> {
             'MiniLM-L6-v2',
             'Encoding',
             'Turns every chunk and every query into a 384-dimension vector. '
-                'Runs on every ingest and every search. Always loaded.',
+                'Runs on every ingest and every search. Always loaded. '
+                '$encoderWhere',
             VaultColors.info,
           ),
           const SizedBox(height: VaultSpace.sm),
           _role(
-            'Gemma 2B int4',
+            slot?.isReady ?? false ? slot!.modelLabel : 'Reasoner',
             'Reasoning',
-            'Reads the chunks retrieval already found and writes them up as '
-                'a JSON capsule. Runs once per query, only when loaded, and '
-                'never sees anything retrieval did not hand it.',
+            reasonerText,
             VaultColors.accent,
           ),
           const SizedBox(height: VaultSpace.md),

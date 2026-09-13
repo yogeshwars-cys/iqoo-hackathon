@@ -75,3 +75,18 @@ target_link_libraries(vault_llama PRIVATE
     android
     log
 )
+
+# ---------------------------------------------------------------------------
+# vault_qnn_delegate: thin C shim that dlopen()s Qualcomm's QNN LiteRT
+# delegate (Maven AAR, not linked here) and returns a TfLiteDelegate* to Dart
+# FFI for the MiniLM encoder. No Qualcomm headers or SDK at build time —
+# see vault_qnn_delegate.cpp for why the plugin ABI is used. Independent of
+# llama.cpp: GGML_HEXAGON stays OFF, the NPU is for embeddings only.
+# ---------------------------------------------------------------------------
+add_library(vault_qnn_delegate SHARED vault_qnn_delegate.cpp)
+set_target_properties(vault_qnn_delegate PROPERTIES CXX_VISIBILITY_PRESET hidden)
+target_link_libraries(vault_qnn_delegate PRIVATE log dl)
+# Keep the statically linked libc++ private: only the four vault_qnn_* entry
+# points are exported, so nothing in this shim can interpose on symbols of
+# the QNN, LiteRT or llama.cpp libraries sharing the process.
+target_link_options(vault_qnn_delegate PRIVATE "-Wl,--exclude-libs,ALL")

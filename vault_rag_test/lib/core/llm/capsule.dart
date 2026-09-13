@@ -363,8 +363,9 @@ class ContextCapsule {
           'The language model ran but its output could not be parsed; this '
               'capsule was rebuilt from retrieval alone.'
         else if (gatingPath == GatingPath.extractiveEarlyExit)
-          'Retrieval similarity cleared the early-exit threshold, so the '
-              'language model was not run. The answer is a line quoted '
+          'Retrieval-only early exit: similarity cleared the threshold, so '
+              'no language model ran. MiniLM embedding on '
+              '${result.embeddingBackend}; the answer is a line quoted '
               'verbatim from the corpus.'
         else
           'Generated with retrieval only — no language model was used. '
@@ -509,6 +510,10 @@ class ContextCapsule {
 
   static Map<String, dynamic> _retrievalBlock(SearchResult result) => {
         'encoder': 'all-MiniLM-L6-v2',
+        // From the runtime's own verdict (embedding_service.dart), never a
+        // label chosen for the demo.
+        'encoder_backend': result.embeddingBackend,
+        'encoder_hardware': result.embeddingHardware,
         'chunks_returned': result.chunks.length,
         'chunks_scanned': result.totalIndexed,
         'latency_ms': result.latencyMs,

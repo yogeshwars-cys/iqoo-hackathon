@@ -50,6 +50,7 @@ import 'bridge/bridge_client.dart';
 import 'core/llm/llama_runtime.dart';
 import 'core/llm/llm_runtime.dart';
 import 'core/llm/model_settings.dart';
+import 'core/llm/reasoner_coordinator.dart';
 import 'core/security/capsule_signer.dart';
 import 'core/vault_engine.dart';
 import 'link/vault_link_service.dart';
@@ -57,6 +58,7 @@ import 'telemetry/benchmark_runner.dart';
 import 'telemetry/compute_telemetry.dart';
 import 'telemetry/device_info.dart';
 import 'telemetry/llm_benchmark_runner.dart';
+import 'telemetry/pipeline_benchmark_runner.dart';
 import 'ui/bridge_page.dart';
 import 'ui/link_page.dart';
 import 'ui/model_page.dart';
@@ -109,9 +111,11 @@ class _AppShellState extends State<AppShell> {
   late final VaultEngine _engine;
   late final LlmRuntime _llm;
   late final LlamaRuntime _llama;
+  late final ReasonerCoordinator _reasoner;
   late final ComputeTelemetry _telemetry;
   late final BenchmarkRunner _benchmark;
   late final LlmBenchmarkRunner _llmBenchmark;
+  late final PipelineBenchmarkRunner _pipelineBenchmark;
   late final BridgeClient _bridge;
   late final VaultLinkService _link;
   AppLifecycleListener? _lifecycle;
@@ -138,25 +142,41 @@ class _AppShellState extends State<AppShell> {
     // telemetry service turns into the "inference duty" lane. A callback
     // rather than an import, so core/ has no dependency on telemetry/.
     _engine.embeddings.onInference = _meter.record;
+    // Per-hardware leases: MiniLM on the NPU only once QNN HTP is verified,
+    // generation on whatever device its runtime confirms. GPU and NPU are
+    // tracked independently, so genuine overlap is visible.
+    _engine.embeddings.ledger = _meter;
 
-    _llm = LlmRuntime();
-    // Generation feeds the same duty-cycle lane as embedding, so a capsule
-    // being written shows up on the chart as the multi-second block of work
-    // it actually is.
-    _llm.onGeneration = _meter.record;
-    _engine.llm = _llm;
+    _llm = LlmRuntime()
+      ..onGeneration = _meter.record
+      ..ledger = _meter;
+    _llama = LlamaRuntime()
+      ..onGeneration = _meter.record
+      ..ledger = _meter;
 
-    // The llama.cpp/GGUF path, alongside _llm rather than replacing it — see
-    // llama_runtime.dart's file header. VaultEngine.ask() prefers this one
-    // when it is ready, so loading a GGUF model here also makes it the
-    // engine "Ask on device" actually reasons with.
-    _llama = LlamaRuntime();
-    _llama.onGeneration = _meter.record;
-    _engine.llama = _llama;
+    // ONE reasoner. Both runtimes exist, but only through the coordinator:
+    // a successful load of either unloads the other, and ask() routes to the
+    // persisted selection — never "whichever is ready".
+    _reasoner = ReasonerCoordinator(
+      [LlamaSlot(_llama), MediaPipeSlot(_llm)],
+      onSelected: (kind) async {
+        _modelSettings =
+            _modelSettings.copyWith(activeReasoner: kind.settingsName);
+        await _modelSettings.save(_documentsPath);
+      },
+    );
+    _engine.reasoner = _reasoner;
 
     _telemetry = ComputeTelemetry(meter: _meter);
     _benchmark = BenchmarkRunner(engine: _engine, telemetry: _telemetry);
     _llmBenchmark = LlmBenchmarkRunner(llm: _llm, telemetry: _telemetry);
+    _pipelineBenchmark = PipelineBenchmarkRunner(
+      engine: _engine,
+      telemetry: _telemetry,
+      meter: _meter,
+      reasoner: _reasoner,
+      llama: _llama,
+    );
     _bridge = BridgeClient(
       engine: _engine,
       telemetrySnapshot: _telemetry.snapshot,
@@ -210,12 +230,30 @@ class _AppShellState extends State<AppShell> {
       _modelSettings = await ModelSettings.load(dir.path);
       _telemetry.start();
 
-      // Deliberately not auto-loading Gemma unless asked. A cold start that
-      // spends 30 s on weights most sessions never use is the wrong default;
-      // retrieval is the fast path and stays fast.
-      final remembered = _modelSettings.modelPath;
-      if (_modelSettings.autoLoad && remembered != null) {
-        unawaited(_llm.load(remembered));
+      // Restore the selected reasoner, then auto-load ONLY that runtime,
+      // and only when auto-load was switched on. A cold start that spends
+      // 30 s on weights most sessions never use is the wrong default.
+      final selected =
+          ReasonerKind.parse(_modelSettings.resolvedActiveReasoner);
+      _reasoner.restoreSelection(selected);
+      if (_modelSettings.autoLoad) {
+        switch (selected) {
+          case ReasonerKind.llama:
+            final path = _modelSettings.llamaModelPath;
+            final backend = _rememberedLlamaBackend();
+            if (path != null && backend != null) {
+              unawaited(_reasoner.activate(ReasonerKind.llama,
+                  () => _llama.load(path, backend: backend)));
+            }
+          case ReasonerKind.mediapipe:
+            final path = _modelSettings.modelPath;
+            if (path != null) {
+              unawaited(_reasoner.activate(
+                  ReasonerKind.mediapipe, () => _llm.load(path)));
+            }
+          case null:
+            break;
+        }
       }
       if (!mounted) return;
       setState(() => _bootstrapped = true);
@@ -233,11 +271,13 @@ class _AppShellState extends State<AppShell> {
     _lifecycle?.dispose();
     _bridge.dispose();
     _link.dispose();
+    _reasoner.dispose();
     _llm.dispose();
     _llama.dispose();
     _telemetry.dispose();
     _benchmark.dispose();
     _llmBenchmark.dispose();
+    _pipelineBenchmark.dispose();
     _engine.dispose();
     super.dispose();
   }
@@ -287,10 +327,12 @@ class _AppShellState extends State<AppShell> {
         child: IndexedStack(
           index: _tab,
           children: [
-            VaultPage(engine: _engine, llm: _llm),
+            VaultPage(engine: _engine, reasoner: _reasoner),
             ModelPage(
               llm: _llm,
               llama: _llama,
+              reasoner: _reasoner,
+              embeddingStatus: () => _engine.embeddings.acceleratorStatus,
               rememberedPath: _modelSettings.modelPath,
               onRemember: (path) async {
                 _modelSettings = _modelSettings.copyWith(modelPath: path);
@@ -318,6 +360,7 @@ class _AppShellState extends State<AppShell> {
               llm: _llm,
               engine: _engine,
               vocabText: _vocabText,
+              pipeline: _pipelineBenchmark,
             ),
           ],
         ),

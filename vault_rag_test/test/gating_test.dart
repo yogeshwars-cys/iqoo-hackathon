@@ -109,6 +109,27 @@ void main() {
     });
   });
 
+  test('early-exit capsule names the real encoder backend, never a guess', () async {
+    final base = resultWithTopScore(0.9);
+    final result = SearchResult(
+      query: base.query,
+      chunks: base.chunks,
+      directAnswer: base.directAnswer,
+      latencyMs: base.latencyMs,
+      embedMs: base.embedMs,
+      totalIndexed: base.totalIndexed,
+      embeddingBackend: 'XNNPACK fallback',
+      embeddingHardware: 'cpu',
+    );
+    final c = await engine.buildCapsule(result);
+    expect(c.gatingPath, GatingPath.extractiveEarlyExit);
+    expect(c.caveats.single, contains('Retrieval-only early exit'));
+    expect(c.caveats.single, contains('XNNPACK fallback'));
+    expect(c.toPrettyJson(), isNot(contains('Hexagon')));
+    expect(c.retrieval['encoder_backend'], 'XNNPACK fallback');
+    expect(c.retrieval['encoder_hardware'], 'cpu');
+  });
+
   group('tier 2 — ambiguous synthesis', () {
     test('invokes the LLM once at 0.50 and marks llm_synthesized', () async {
       final c = await engine.buildCapsule(resultWithTopScore(0.50));

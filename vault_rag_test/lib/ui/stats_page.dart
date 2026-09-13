@@ -30,6 +30,8 @@ import '../telemetry/telemetry_sources.dart';
 import 'theme.dart';
 import 'widgets/common.dart';
 import 'widgets/stream_chart.dart';
+import '../telemetry/pipeline_benchmark_runner.dart';
+import '../core/compute_ledger.dart';
 
 class StatsPage extends StatefulWidget {
   final ComputeTelemetry telemetry;
@@ -39,6 +41,10 @@ class StatsPage extends StatefulWidget {
   final VaultEngine engine;
   final String vocabText;
 
+  /// Staged + overlapping benchmark of MiniLM, vector search and the
+  /// selected reasoner. Null hides the section (tests).
+  final PipelineBenchmarkRunner? pipeline;
+
   const StatsPage({
     super.key,
     required this.telemetry,
@@ -47,6 +53,7 @@ class StatsPage extends StatefulWidget {
     required this.llm,
     required this.engine,
     required this.vocabText,
+    this.pipeline,
   });
 
   @override
@@ -75,6 +82,10 @@ class _StatsPageState extends State<StatsPage> {
         const SizedBox(height: VaultSpace.md),
         _reasoningBenchmarkSection(),
         const SizedBox(height: VaultSpace.md),
+        if (widget.pipeline != null) ...[
+          _pipelineBenchmarkSection(widget.pipeline!),
+          const SizedBox(height: VaultSpace.md),
+        ],
         _combinedReportSection(),
       ],
     );
@@ -104,6 +115,8 @@ class _StatsPageState extends State<StatsPage> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _laneTiles(t),
+              const SizedBox(height: VaultSpace.md),
+              _dispatchRow(t),
               const SizedBox(height: VaultSpace.lg),
               StreamChart(
                 windowSize: t.historyCapacity,
@@ -124,6 +137,154 @@ class _StatsPageState extends State<StatsPage> {
           ),
         );
       },
+    );
+  }
+
+  /// Hardware the app itself has work running on, from runtime leases —
+  /// independent per hardware, so NPU embedding and GPU generation show as
+  /// active at the same time when they overlap. Distinct from the lanes
+  /// above, which are device-wide counters and may be unavailable.
+  Widget _dispatchRow(ComputeTelemetry t) {
+    final s = t.latest;
+    final active = t.meter.activeHardware;
+    Widget pill(ComputeHardware h, String name) {
+      final on = active.contains(h);
+      final busy = s?.appBusyPercent[h];
+      return Semantics(
+        label: '$name ${on ? 'active' : 'idle'}'
+            '${busy == null ? '' : ', ${busy.toStringAsFixed(0)} percent busy'}',
+        child: StatusPill(
+          label: '$name ${on ? 'ACTIVE' : 'IDLE'}'
+              '${busy == null ? '' : ' · ${busy.toStringAsFixed(0)}%'}',
+          color: on ? VaultColors.accent : VaultColors.faint,
+          pulsing: on,
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'APP DISPATCH (RUNTIME LEASES)',
+          style: TextStyle(
+            color: VaultColors.muted,
+            fontSize: 10,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.8,
+          ),
+        ),
+        const SizedBox(height: VaultSpace.xs),
+        Wrap(
+          spacing: VaultSpace.sm,
+          runSpacing: VaultSpace.xs,
+          children: [
+            pill(ComputeHardware.npu, 'NPU'),
+            pill(ComputeHardware.gpu, 'GPU'),
+            pill(ComputeHardware.cpu, 'CPU'),
+          ],
+        ),
+        const SizedBox(height: VaultSpace.xs),
+        Text(
+          'Encoder: ${widget.engine.embeddings.acceleratorStatus.label}',
+          style: const TextStyle(color: VaultColors.faint, fontSize: 11),
+        ),
+      ],
+    );
+  }
+
+  Widget _pipelineBenchmarkSection(PipelineBenchmarkRunner runner) {
+    return ListenableBuilder(
+      listenable: runner,
+      builder: (context, _) {
+        final r = runner.report;
+        return SectionCard(
+          title: 'Two-model pipeline benchmark',
+          subtitle: 'MiniLM, CPU vector search and the selected reasoner timed '
+              'separately, then indexing while a capsule generates. '
+              'Retrieval-only numbers are reported on their own.',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (widget.telemetry.thermal.throttling)
+                _throttleWarning(widget.telemetry.thermal),
+              if (runner.isRunning) ...[
+                const LinearProgressIndicator(
+                  backgroundColor: VaultColors.surfaceHigh,
+                  color: VaultColors.accent,
+                ),
+                const SizedBox(height: VaultSpace.sm),
+                Text(runner.detail,
+                    style: const TextStyle(color: VaultColors.muted, fontSize: 12)),
+                const SizedBox(height: VaultSpace.md),
+                OutlinedButton.icon(
+                  onPressed: runner.cancel,
+                  icon: const Icon(Icons.stop_rounded, size: 18),
+                  label: const Text('Cancel'),
+                ),
+              ] else
+                FilledButton.icon(
+                  onPressed: widget.engine.isReady ? () => runner.run() : null,
+                  icon: const Icon(Icons.stacked_line_chart_rounded, size: 19),
+                  label: const Text('Run pipeline benchmark'),
+                ),
+              if (r != null && !runner.isRunning) ...[
+                const SizedBox(height: VaultSpace.md),
+                _pipelineSummary(r),
+                const SizedBox(height: VaultSpace.md),
+                CodeBlock(const JsonEncoder.withIndent('  ').convert(r.toJson())),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _pipelineSummary(PipelineBenchmarkReport r) {
+    String ms(double v) => '${v.toStringAsFixed(v < 10 ? 2 : 0)} ms';
+    final rows = <(String, String)>[
+      ('MiniLM (${r.embeddingHardware.toUpperCase()})',
+          'P50 ${ms(r.embedding.median)} · P95 ${ms(r.embedding.p95)}'),
+      ('Vector search, 1000×384 (CPU)',
+          'P50 ${ms(r.syntheticVectorSearch.medianMs)} · P95 ${ms(r.syntheticVectorSearch.p95Ms)}'),
+      if (!r.retrievalOnlyEarlyExit.isEmpty)
+        ('Retrieval-only early exit (no LLM)',
+            'P50 ${ms(r.retrievalOnlyEarlyExit.median)} · P95 ${ms(r.retrievalOnlyEarlyExit.p95)}'),
+      if (r.generation != null)
+        ('Generation (${r.generation!.hardware.toUpperCase()})',
+            'P50 ${ms(r.generation!.total.median)} · '
+                '${r.generation!.medianTokensPerSecond.toStringAsFixed(1)} tok/s'),
+      if (r.overlap != null)
+        ('NPU∩GPU overlap',
+            '${r.overlap!.npuGpuOverlap.inMilliseconds} ms · '
+                '${r.overlap!.indexedChunks} chunks indexed during generation'),
+      if (r.skippedGenerationReason != null)
+        ('Generation', 'skipped: ${r.skippedGenerationReason}'),
+    ];
+    return Column(
+      children: [
+        for (final (label, value) in rows)
+          Padding(
+            padding: const EdgeInsets.only(bottom: VaultSpace.xs),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Text(label,
+                      style: const TextStyle(color: VaultColors.muted, fontSize: 12)),
+                ),
+                const SizedBox(width: VaultSpace.sm),
+                Flexible(
+                  child: Text(value,
+                      textAlign: TextAlign.end,
+                      style: VaultText.mono.copyWith(
+                          color: VaultColors.foreground, fontSize: 11.5)),
+                ),
+              ],
+            ),
+          ),
+      ],
     );
   }
 
@@ -935,11 +1096,11 @@ class _SwatchPainter extends CustomPainter {
 ///
 /// One checkbox per [EmbeddingBackend] rather than [BenchmarkRunner]'s old
 /// single "compare" toggle, because the four backends are not equally
-/// costly or equally likely to exist: GPU and NNAPI are the two candidates
-/// for "is there real accelerator here" (NNAPI is Android's route to the
-/// Hexagon NPU when a vendor driver actually implements it) and either can
+/// costly or equally likely to exist. QNN HTP is the verified Hexagon NPU
+/// path (validated against XNNPACK before it is trusted); GPU and NNAPI can
 /// legitimately come back `unavailable` — see [BackendResult] — which is a
-/// finding, not a failure, and costs a fraction of a second to discover.
+/// finding, not a failure. NNAPI is NOT labelled "NPU": LiteRT 1.4 has
+/// largely moved past it and it proves nothing about Hexagon execution.
 /// Plain CPU and XNNPACK are slower to time honestly because the workload
 /// itself is slower on them, not because building the interpreter is.
 class _BackendSweepPicker extends StatelessWidget {
@@ -952,7 +1113,8 @@ class _BackendSweepPicker extends StatelessWidget {
     (EmbeddingBackend.xnnpack, 'XNNPACK', 'accelerated CPU kernels'),
     (EmbeddingBackend.cpu, 'CPU', 'unaccelerated baseline, slow'),
     (EmbeddingBackend.gpu, 'GPU', 'Adreno, may refuse to build'),
-    (EmbeddingBackend.nnapi, 'NPU', 'via NNAPI, may refuse to build'),
+    (EmbeddingBackend.qnnHtp, 'QNN HTP', 'Hexagon NPU, validated vs XNNPACK'),
+    (EmbeddingBackend.nnapi, 'NNAPI', 'legacy route, may refuse to build'),
   ];
 
   @override

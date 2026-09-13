@@ -36,6 +36,7 @@ class MainActivity : FlutterActivity() {
     private var llamaChannel: LlamaChannel? = null
     private var keystoreChannel: KeystoreChannel? = null
     private var clipboardChannel: SensitiveClipboardChannel? = null
+    private var qnnChannel: QnnChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -52,6 +53,10 @@ class MainActivity : FlutterActivity() {
         // KeystoreChannel.kt for the key specs and the StrongBox/TEE policy.
         keystoreChannel = KeystoreChannel(flutterEngine.dartExecutor.binaryMessenger, applicationContext)
         clipboardChannel = SensitiveClipboardChannel(flutterEngine.dartExecutor.binaryMessenger, applicationContext)
+
+        // QNN HTP bring-up facts and delegation evidence for the MiniLM
+        // encoder. The delegate itself is created from Dart FFI.
+        qnnChannel = QnnChannel(flutterEngine.dartExecutor.binaryMessenger, applicationContext)
 
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -76,6 +81,8 @@ class MainActivity : FlutterActivity() {
         keystoreChannel = null
         clipboardChannel?.dispose()
         clipboardChannel = null
+        qnnChannel?.dispose()
+        qnnChannel = null
         super.onDestroy()
     }
 

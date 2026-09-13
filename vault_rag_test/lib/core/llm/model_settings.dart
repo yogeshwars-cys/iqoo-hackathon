@@ -38,12 +38,36 @@ class ModelSettings {
   /// file stays free of a dependency on llama_runtime.dart for one string.
   final String? llamaBackend;
 
+  /// Which reasoner is THE reasoner: "llama" (llama.cpp / GGUF) or
+  /// "mediapipe" (MediaPipe / Gemma .task). Exactly one runtime is ever
+  /// loaded — see reasoner_coordinator.dart — and this is the persisted half
+  /// of that invariant: routing in VaultEngine.ask and auto-load at startup
+  /// both read it, instead of "whichever happens to be ready".
+  ///
+  /// Null only in settings files written before the field existed; see
+  /// [resolvedActiveReasoner] for how those are interpreted.
+  final String? activeReasoner;
+
   const ModelSettings({
     this.modelPath,
     this.autoLoad = false,
     this.llamaModelPath,
     this.llamaBackend,
+    this.activeReasoner,
   });
+
+  /// [activeReasoner], or for a pre-invariant settings file the runtime the
+  /// old bootstrap would have auto-loaded (MediaPipe, if a path was saved),
+  /// falling back to llama.cpp if only a GGUF path exists. Never guesses a
+  /// runtime that has no remembered model.
+  String? get resolvedActiveReasoner {
+    if (activeReasoner == 'llama' || activeReasoner == 'mediapipe') {
+      return activeReasoner;
+    }
+    if (modelPath != null) return 'mediapipe';
+    if (llamaModelPath != null) return 'llama';
+    return null;
+  }
 
   static const empty = ModelSettings();
 
@@ -60,6 +84,7 @@ class ModelSettings {
         autoLoad: (map['auto_load'] as bool?) ?? false,
         llamaModelPath: map['llama_model_path'] as String?,
         llamaBackend: map['llama_backend'] as String?,
+        activeReasoner: map['active_reasoner'] as String?,
       );
     } catch (_) {
       return empty;
@@ -74,6 +99,7 @@ class ModelSettings {
           'auto_load': autoLoad,
           'llama_model_path': llamaModelPath,
           'llama_backend': llamaBackend,
+          'active_reasoner': activeReasoner,
         }),
       );
     } catch (_) {
@@ -86,11 +112,13 @@ class ModelSettings {
     bool? autoLoad,
     String? llamaModelPath,
     String? llamaBackend,
+    String? activeReasoner,
   }) =>
       ModelSettings(
         modelPath: modelPath ?? this.modelPath,
         autoLoad: autoLoad ?? this.autoLoad,
         llamaModelPath: llamaModelPath ?? this.llamaModelPath,
         llamaBackend: llamaBackend ?? this.llamaBackend,
+        activeReasoner: activeReasoner ?? this.activeReasoner,
       );
 }

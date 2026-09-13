@@ -110,9 +110,12 @@ void main() {
       expect(described['state'], 'loading');
       expect(described['total_indexed'], 0);
       // The LLM block must always be present so a consumer can branch on it
-      // without a null check.
+      // without a null check — it now describes the single selected reasoner.
       expect(described['llm'], isNotNull);
       expect((described['llm'] as Map)['state'], 'unloaded');
+      expect((described['reasoner'] as Map)['active_reasoner'], isNull);
+      // Before load() the encoder has not attempted any accelerator.
+      expect((described['embedding_status'] as Map)['verdict'], 'notAttempted');
       engine.dispose();
     });
   });
