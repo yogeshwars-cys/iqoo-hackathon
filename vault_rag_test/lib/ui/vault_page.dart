@@ -629,10 +629,8 @@ class _VaultPageState extends State<VaultPage> {
       children: [
         StatusPill(
           label: switch (capsule.gatingPath) {
-            GatingPath.extractiveEarlyExit => 'TIER 1 · EARLY EXIT',
-            GatingPath.llmSynthesized => 'TIER 2 · LLM',
-            GatingPath.extractiveFallback => 'TIER 2 · EXTRACTIVE',
-            GatingPath.belowRelevanceThreshold => 'TIER 3 · NO MATCH',
+            GatingPath.llmSynthesized => 'LLM ANSWER',
+            GatingPath.extractiveFallback => 'RETRIEVAL ONLY',
           },
           color: VaultColors.info,
         ),
@@ -708,15 +706,7 @@ class _VaultPageState extends State<VaultPage> {
         const SizedBox(height: VaultSpace.lg),
         _label('RETRIEVED CONTEXT'),
         const SizedBox(height: VaultSpace.sm),
-        if (capsule.context.isEmpty &&
-            capsule.gatingPath == GatingPath.belowRelevanceThreshold)
-          const EmptyState(
-            icon: Icons.search_off_rounded,
-            title: 'Below the relevance threshold',
-            message: 'No chunk scored high enough to quote. Low-scoring text '
-                'is left out of the capsule on purpose.',
-          )
-        else if (capsule.context.isEmpty)
+        if (capsule.context.isEmpty)
           const EmptyState(
             icon: Icons.inbox_outlined,
             title: 'Nothing indexed yet',

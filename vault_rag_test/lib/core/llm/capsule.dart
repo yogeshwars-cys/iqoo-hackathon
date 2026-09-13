@@ -47,7 +47,6 @@ import 'dart:typed_data';
 
 import '../gating.dart';
 import '../security/capsule_signing.dart';
-import '../security/security_constants.dart';
 import '../vault_engine.dart';
 import '../vector_store.dart';
 
@@ -229,7 +228,7 @@ class ContextCapsule {
   /// verbatim.
   final int timestamp;
 
-  /// Unsigned telemetry about the gate: top score and thresholds.
+  /// Unsigned telemetry about how the answer was produced (e.g. top score).
   final Map<String, dynamic> gating;
 
   /// Null until [CapsuleSigner] has run.
@@ -314,7 +313,6 @@ class ContextCapsule {
         'retrieval': retrieval,
         'gating': {
           'path': gatingPath.wireName,
-          'tier': gatingPath.tier,
           ...gating,
         },
         if (provenance != null) 'provenance': provenance!.toJson(),
@@ -362,14 +360,10 @@ class ContextCapsule {
         if (modelRan)
           'The language model ran but its output could not be parsed; this '
               'capsule was rebuilt from retrieval alone.'
-        else if (gatingPath == GatingPath.extractiveEarlyExit)
-          'Retrieval-only early exit: similarity cleared the threshold, so '
-              'no language model ran. MiniLM embedding on '
-              '${result.embeddingBackend}; the answer is a line quoted '
-              'verbatim from the corpus.'
         else
           'Generated with retrieval only — no language model was used. '
-              'The answer is a line quoted verbatim from the corpus.',
+              'The answer is a line quoted verbatim from the corpus '
+              '(MiniLM embedding on ${result.embeddingBackend}).',
       ],
       sources: result.chunks
           .map((c) => CapsuleSource(c.fileName, c.score))
@@ -389,40 +383,6 @@ class ContextCapsule {
       gating: gating,
     );
   }
-
-  /// Tier 3: nothing retrieved cleared the relevance floor.
-  ///
-  /// Deterministic by construction — fixed answer, no facts, no context.
-  /// The low-scoring chunks are deliberately NOT shipped: they are not
-  /// evidence for anything, and a capsule that leaves the device over the
-  /// clipboard should carry no document text it does not need. File names
-  /// and scores stay in `sources` so the miss is still diagnosable.
-  factory ContextCapsule.belowRelevanceThreshold(
-    SearchResult result, {
-    int? timestamp,
-    Map<String, dynamic> gating = const {},
-  }) =>
-      ContextCapsule(
-        query: result.query.trim(),
-        answer: kNoRelevantFactsAnswer,
-        confidence: CapsuleConfidence.none,
-        keyFacts: const [],
-        caveats: const [
-          'No retrieved chunk cleared the relevance threshold; the language '
-              'model was not run.',
-        ],
-        sources: result.chunks
-            .map((c) => CapsuleSource(c.fileName, c.score))
-            .toList(),
-        context: const [],
-        extractedAnswer: null,
-        extractedFrom: null,
-        generation: CapsuleGeneration.notRun,
-        retrieval: _retrievalBlock(result),
-        gatingPath: GatingPath.belowRelevanceThreshold,
-        timestamp: timestamp ?? DateTime.now().millisecondsSinceEpoch,
-        gating: gating,
-      );
 
   /// Builds a capsule from the model's raw output, falling back cleanly.
   factory ContextCapsule.fromModelOutput(

@@ -37,7 +37,7 @@ CAPSULE = {
     "provenance": {
         "device": "vivo I2501 · Qualcomm SM8750 · Android 16",
         "key_security_level": "tee",
-        "gating_path": "extractive_early_exit",
+        "gating_path": "llm_synthesized",
         "timestamp": 1773368291000,
         # SPKI DER of a fixed P-256 point — only its SHA-256 is signed, so
         # any byte string works as a vector; this one is a real key.

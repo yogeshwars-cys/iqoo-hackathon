@@ -197,9 +197,6 @@ class VaultEngine extends ChangeNotifier {
   @visibleForTesting
   CapsuleSynthesizer? synthesizerOverride;
 
-  /// Score gates for [ask]. See gating.dart before changing the defaults.
-  GatingPolicy gatingPolicy;
-
   /// Signs every capsule [ask] returns.
   CapsuleSigner signer;
 
@@ -222,7 +219,6 @@ class VaultEngine extends ChangeNotifier {
   VaultEngine({
     MiniLMEmbeddingService? embeddings,
     Chunker? chunker,
-    this.gatingPolicy = GatingPolicy.standard,
     CapsuleSigner? signer,
     this.chunkCipher = const KeystoreChunkCipher(),
   })  : embeddings = embeddings ?? MiniLMEmbeddingService(),
@@ -390,24 +386,18 @@ class VaultEngine extends ChangeNotifier {
     });
   }
 
-  /// Retrieval, a three-tier gate, and a signed context capsule.
+  /// Retrieval, then the selected reasoner, then a signed context capsule.
   ///
   /// NOT wrapped in [_serialized], and that is load-bearing rather than an
   /// oversight: it calls [search], which takes the lock itself. Nesting the
   /// two would deadlock the engine on the first query. Generation has its own
   /// queue inside whichever runtime answers.
   ///
-  /// THE GATE (gating.dart), decided on the best retrieval score alone:
-  ///
-  ///   >= 0.82       extractive_early_exit      the LLM is never touched
-  ///   0.50 – 0.82   llm_synthesized            llama.cpp if ready, else
-  ///                                            MediaPipe; extractive_fallback
-  ///                                            if neither can run
-  ///   < 0.50        below_relevance_threshold  fixed refusal, no LLM
-  ///
-  /// Tier 1 and 3 never read [llama] or [llm] beyond this method's gate, so
-  /// a deterministic hit costs embed + rank + top-K decrypt and nothing
-  /// else. Whatever the tier, the capsule is signed before it is returned.
+  /// When a reasoner is loaded and [generate] is on, it writes the answer for
+  /// every query that retrieved context — no similarity gate decides whether
+  /// the model is worth running (see gating.dart for why that was removed).
+  /// With no model, generation off, nothing retrieved, or a failed
+  /// generation, the capsule falls back to the extractive answer and says so.
   Future<ContextCapsule> ask(
     String query, {
     int topK = 5,
@@ -418,8 +408,8 @@ class VaultEngine extends ChangeNotifier {
     return signer.sign(capsule);
   }
 
-  /// The gate itself, over an existing [SearchResult]. Split from [ask] so
-  /// it is testable without an encoder or a database.
+  /// Everything after retrieval, over an existing [SearchResult]. Split from
+  /// [ask] so it is testable without an encoder or a database.
   @visibleForTesting
   Future<ContextCapsule> buildCapsule(
     SearchResult result, {
@@ -429,27 +419,16 @@ class VaultEngine extends ChangeNotifier {
     for (final c in result.chunks) {
       if (top == null || c.score > top) top = c.score;
     }
-    final path = gatingPolicy.decide(top);
-    final gating = <String, dynamic>{
+    final info = <String, dynamic>{
       'top_score': top == null ? null : double.parse(top.toStringAsFixed(4)),
-      ...gatingPolicy.toJson(),
     };
 
-    switch (path) {
-      case GatingPath.extractiveEarlyExit:
-        return ContextCapsule.fromRetrievalOnly(result,
-            gatingPath: GatingPath.extractiveEarlyExit, gating: gating);
-      case GatingPath.belowRelevanceThreshold:
-        return ContextCapsule.belowRelevanceThreshold(result, gating: gating);
-      case GatingPath.llmSynthesized:
-      case GatingPath.extractiveFallback:
-        break;
-    }
-
     final synthesizer = generate ? _activeSynthesizer() : null;
-    if (synthesizer == null) {
+    // Nothing retrieved means nothing to reason over: running the model
+    // would only have it say it does not know.
+    if (synthesizer == null || result.chunks.isEmpty) {
       return ContextCapsule.fromRetrievalOnly(result,
-          gatingPath: GatingPath.extractiveFallback, gating: gating);
+          gatingPath: GatingPath.extractiveFallback, gating: info);
     }
 
     final model = synthesizer.modelLabel;
@@ -463,7 +442,7 @@ class VaultEngine extends ChangeNotifier {
         backend: backend,
         elapsedMs: generated.elapsedMs,
         tokens: generated.tokens,
-        gating: gating,
+        gating: info,
       );
     } catch (e) {
       // A generation failure must never lose the retrieval. The capsule
@@ -471,7 +450,7 @@ class VaultEngine extends ChangeNotifier {
       return ContextCapsule.fromRetrievalOnly(
         result,
         gatingPath: GatingPath.extractiveFallback,
-        gating: gating,
+        gating: info,
         generation: CapsuleGeneration(
           ran: true,
           model: model,

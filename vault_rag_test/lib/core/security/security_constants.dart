@@ -27,12 +27,5 @@ const kGcmMinPayloadLength = kGcmIvLength + kGcmTagLength;
 /// of exactly this many float32s.
 const kEmbeddingDim = 384;
 
-/// Retrieval-score gates for [VaultEngine.ask]. See vault_engine.dart.
-const kTier1Threshold = 0.82;
-const kTier2Threshold = 0.50;
-
 /// How long a capsule may sit on the clipboard before Vault scrubs it.
 const kClipboardTtl = Duration(seconds: 20);
-
-/// Answer returned verbatim below [kTier2Threshold].
-const kNoRelevantFactsAnswer = 'No relevant facts found in vault.';

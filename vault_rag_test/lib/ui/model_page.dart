@@ -839,8 +839,7 @@ class _ModelPageState extends State<ModelPage> {
         : slot.isReady
             ? '${slot.modelLabel} via ${slot.kind.label} on '
                 '${slot.backendLabel}. Reads the chunks retrieval already '
-                'found and writes them up as a JSON capsule, once per query. '
-                'Skipped entirely on a tier-1 early exit or a tier-3 miss.'
+                'found and writes them up as a JSON capsule, once per query.'
             : '${slot.kind.label} is the selected reasoner but is not loaded. '
                 'Queries return the extractive capsule until it is.';
 

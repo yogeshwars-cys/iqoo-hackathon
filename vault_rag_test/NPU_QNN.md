@@ -108,7 +108,7 @@ Then:
 - **Stats tab → Live utilisation:** *APP DISPATCH* shows NPU / GPU / CPU leases
   independently.
 - **Stats tab → Two-model pipeline benchmark:** exports JSON with MiniLM P50/P95,
-  CPU vector search, retrieval-only early exit (reported separately),
+  CPU vector search, retrieval-only with generation off (reported separately),
   generation prefill/decode/tok/s, the overlap window with
   `npu_gpu_overlap_ms`, RSS, thermal before and after, the QNN verdict, and
   llama.cpp's own `backend_status`.

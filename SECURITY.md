@@ -100,8 +100,9 @@ Does not stop:
 3. **Fresh attestation challenge.** Generate the signing key at enrollment with
    a laptop-supplied challenge, not a fixed string, so the chain proves
    freshness as well as provenance.
-4. **Calibrate gating thresholds.** 0.82/0.50 are a priori. MiniLM relevant hits
-   often land between 0.45 and 0.75. Tune on `bridge/corpus/run_eval.py`.
+4. **Fix retrieval before blaming the model.** On the device, chunks of 256
+   *words* ran ~400 tokens, so MiniLM (254-token window) never saw 35–38% of
+   each chunk. Chunk by tokens (≤ ~200, ~40 overlap) and re-index.
 5. **LAN bridge is `ws://` cleartext.** For the `lan` flavor, move to TLS with a
    pinned self-signed cert, or Noise over the pairing secret, and require the
    same pairing as VaultLink.

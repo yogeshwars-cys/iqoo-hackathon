@@ -10,7 +10,7 @@
 ///   2. Vector search         CPU ranking only, on the live store and on a
 ///                            fixed synthetic 1,000 x 384 matrix
 ///   3. Retrieval-only        ask(generate: false): embed + rank + top-K
-///      early exit            decrypt + gate + sign. NO language model. Kept
+///      (generation off)      decrypt + extractive answer + sign. NO LLM. Kept
 ///                            in its own section because a millisecond-scale
 ///                            extractive answer is not comparable to a
 ///                            GPU-generated one, and averaging them together
@@ -181,7 +181,7 @@ class PipelineBenchmarkReport {
             'p95_ms': _r(syntheticVectorSearch.p95Ms, 3),
           },
         },
-        'stage_3_retrieval_only_early_exit': {
+        'stage_3_retrieval_only_generation_off': {
           'note': 'no language model; not comparable to a generated answer',
           ...retrievalOnlyEarlyExit.toJson(),
         },
@@ -269,7 +269,7 @@ class PipelineBenchmarkRunner extends ChangeNotifier {
     final synthetic = runRankBenchmark(vectors: 1000, runs: searchRuns);
     await _yield();
 
-    // 3. Retrieval-only early exit ---------------------------------------
+    // 3. Retrieval-only (generation off) ---------------------------------
     final earlyMs = <double>[];
     for (var i = 0; i < earlyExitRuns && !_cancel && engine.chunkCount > 0; i++) {
       _set(PipelinePhase.earlyExit, 'Retrieval-only (no LLM) ${i + 1}/$earlyExitRuns');

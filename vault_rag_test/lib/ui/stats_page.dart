@@ -249,7 +249,7 @@ class _StatsPageState extends State<StatsPage> {
       ('Vector search, 1000×384 (CPU)',
           'P50 ${ms(r.syntheticVectorSearch.medianMs)} · P95 ${ms(r.syntheticVectorSearch.p95Ms)}'),
       if (!r.retrievalOnlyEarlyExit.isEmpty)
-        ('Retrieval-only early exit (no LLM)',
+        ('Retrieval-only, generation off (no LLM)',
             'P50 ${ms(r.retrievalOnlyEarlyExit.median)} · P95 ${ms(r.retrievalOnlyEarlyExit.p95)}'),
       if (r.generation != null)
         ('Generation (${r.generation!.hardware.toUpperCase()})',
