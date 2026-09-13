@@ -64,9 +64,16 @@ Does not stop:
   sealed to the paired laptop.
 - Traffic analysis: frame sizes and timing are visible.
 
+## Verified on the iQOO 15
+
+- `KeyInfo` reports the AES and ECDSA keys at StrongBox level (SM8850).
+- Capsules produced on the phone carry valid ECDSA P-256 signatures that
+  `capsule_verify.py` accepts on the laptop.
+- The sealed request/response loop works over the Office Kit clipboard.
+
 ## Verified in this environment
 
-- Host: `flutter test` (213 tests), `flutter analyze` (clean), bridge `pytest tests/` (66 tests).
+- Host: `flutter test` (236 tests), `flutter analyze` (clean), bridge `pytest tests/` (66 tests).
 - The raw SQLite file, including after a plaintext→encrypted migration, contains
   no plaintext marker bytes (`secure_delete` + `VACUUM`).
 - JDK 21 JCA (`SHA256withECDSA`, `AES/GCM/NoPadding`, the same calls
@@ -78,9 +85,9 @@ Does not stop:
 
 ## Not yet verified (needs the iQOO 15)
 
-- Keys actually generated in StrongBox or the TEE (`keyStatus`), and StrongBox
-  acceptance of the specs. The code falls back to the TEE when StrongBox refuses.
-- Real attestation chain contents and root.
+- Real attestation chain contents against a Google hardware-attestation root.
+- A full VAULTLINK/2 pair + enroll session on the phone (the device sessions so
+  far used legacy v1).
 - On-device ranking latency. Run
   `flutter run --release --flavor airgap -t lib/bench_rank_main.dart`
   (target: median < 3 ms for 1,000×384). Host JIT median was 0.6–0.8 ms, which is

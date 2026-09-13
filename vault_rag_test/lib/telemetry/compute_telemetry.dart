@@ -541,6 +541,16 @@ class ComputeTelemetry extends ChangeNotifier {
     _notify();
   }
 
+  /// Appends a synthetic sample — screenshot and widget tests only.
+  @visibleForTesting
+  void debugAddSample(TelemetrySample s) {
+    _push(s);
+    laneKinds[ComputeLane.cpu] = s.cpu.kind;
+    laneKinds[ComputeLane.gpu] = s.gpu.kind;
+    laneKinds[ComputeLane.npu] = s.npu.kind;
+    _notify();
+  }
+
   void _push(TelemetrySample s) {
     if (_history.length >= historyCapacity) _history.removeFirst();
     _history.add(s);

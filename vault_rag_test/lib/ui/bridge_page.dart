@@ -87,19 +87,19 @@ class _BridgePageState extends State<BridgePage> {
         return ListView(
           padding: const EdgeInsets.fromLTRB(
             VaultSpace.lg,
-            VaultSpace.md,
+            VaultSpace.sm,
             VaultSpace.lg,
             VaultSpace.xxl,
           ),
           children: [
             _linkCard(c),
-            const SizedBox(height: VaultSpace.md),
+            const SizedBox(height: VaultSpace.lg),
             if (c.isConnected) ...[
               _servedCard(c),
-              const SizedBox(height: VaultSpace.md),
+              const SizedBox(height: VaultSpace.lg),
             ],
             _logCard(c),
-            const SizedBox(height: VaultSpace.md),
+            const SizedBox(height: VaultSpace.lg),
             _howToCard(),
           ],
         );
@@ -108,23 +108,30 @@ class _BridgePageState extends State<BridgePage> {
   }
 
   Widget _linkCard(BridgeClient c) {
+    final text = Theme.of(context).textTheme;
     final (label, color, pulsing) = switch (c.state) {
-      BridgeState.connected => ('LINKED', VaultColors.accent, true),
-      BridgeState.connecting => ('DIALLING', VaultColors.warn, true),
-      BridgeState.error => ('ERROR', VaultColors.danger, false),
-      BridgeState.offline => ('OFFLINE', VaultColors.faint, false),
+      BridgeState.connected => ('Linked', VaultColors.accent, true),
+      BridgeState.connecting => ('Dialling', VaultColors.warn, true),
+      BridgeState.error => ('Error', VaultColors.danger, false),
+      BridgeState.offline => ('Offline', VaultColors.faint, false),
     };
 
     return SectionCard(
+      icon: Icons.hub_rounded,
       title: 'Desktop bridge',
-      subtitle: c.isConnected
-          ? c.endpoint
-          : 'Enter the laptop’s LAN address. The phone dials out; nothing '
-              'can reach the vault unless it does.',
+      subtitle: c.isConnected ? c.endpoint : 'The phone dials out to the laptop',
       trailing: StatusPill(label: label, color: color, pulsing: pulsing),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          const Notice(
+            tone: NoticeTone.warn,
+            icon: Icons.wifi_tethering_rounded,
+            title: 'The only feature that opens a socket',
+            message: 'Chunks retrieved over the bridge leave the device. The '
+                'air-gap claim holds only while this stays disconnected.',
+          ),
+          const SizedBox(height: VaultSpace.lg),
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -137,7 +144,7 @@ class _BridgePageState extends State<BridgePage> {
                   autocorrect: false,
                   style: VaultText.mono.copyWith(
                     color: VaultColors.foreground,
-                    fontSize: 14,
+                    fontSize: 15,
                   ),
                   decoration: const InputDecoration(
                     labelText: 'Laptop IP',
@@ -147,91 +154,52 @@ class _BridgePageState extends State<BridgePage> {
               ),
               const SizedBox(width: VaultSpace.sm),
               Expanded(
+                flex: 2,
                 child: TextField(
                   controller: _portController,
                   enabled: !c.isConnected,
                   keyboardType: TextInputType.number,
                   style: VaultText.mono.copyWith(
                     color: VaultColors.foreground,
-                    fontSize: 14,
+                    fontSize: 15,
                   ),
                   decoration: const InputDecoration(labelText: 'Port'),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: VaultSpace.md),
+          if (_localIp != null) ...[
+            const SizedBox(height: VaultSpace.sm),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: VaultSpace.lg),
+              child: Text(
+                'This phone is $_localIp; the laptop must be on the same subnet.',
+                style: text.bodySmall,
+              ),
+            ),
+          ],
+          const SizedBox(height: VaultSpace.lg),
           if (c.isConnected)
             OutlinedButton.icon(
               onPressed: c.disconnect,
-              icon: const Icon(Icons.link_off_rounded, size: 19),
+              icon: const Icon(Icons.link_off_rounded, size: 18),
               label: const Text('Disconnect'),
             )
           else
             FilledButton.icon(
               onPressed: c.state == BridgeState.connecting ? null : _connect,
-              icon: const Icon(Icons.link_rounded, size: 19),
+              icon: const Icon(Icons.link_rounded, size: 18),
               label: Text(
                 c.state == BridgeState.connecting ? 'Connecting…' : 'Connect',
               ),
             ),
           if (c.statusDetail != null) ...[
             const SizedBox(height: VaultSpace.md),
-            Text(
-              c.statusDetail!,
-              style: TextStyle(
-                color: c.state == BridgeState.error
-                    ? VaultColors.danger
-                    : VaultColors.faint,
-                fontSize: 11.5,
-                height: 1.45,
-              ),
-            ),
+            if (c.state == BridgeState.error)
+              Notice(tone: NoticeTone.danger, message: c.statusDetail!)
+            else
+              Text(c.statusDetail!, style: text.bodySmall),
           ],
-          if (_localIp != null) ...[
-            const SizedBox(height: VaultSpace.sm),
-            Text(
-              'This phone is $_localIp — the laptop must be on the same subnet.',
-              style: const TextStyle(
-                color: VaultColors.faint,
-                fontSize: 11,
-                height: 1.4,
-              ),
-            ),
-          ],
-          const SizedBox(height: VaultSpace.md),
-          _networkNotice(),
-        ],
-      ),
-    );
-  }
-
-  Widget _networkNotice() {
-    return Container(
-      padding: const EdgeInsets.all(VaultSpace.md),
-      decoration: BoxDecoration(
-        color: VaultColors.warn.withValues(alpha: 0.07),
-        borderRadius: BorderRadius.circular(VaultSpace.radiusSm),
-        border: Border.all(color: VaultColors.warn.withValues(alpha: 0.3)),
-      ),
-      child: const Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(Icons.wifi_tethering_rounded,
-              size: 15, color: VaultColors.warn),
-          SizedBox(width: VaultSpace.sm),
-          Expanded(
-            child: Text(
-              'This is the only feature that opens a socket. Chunks retrieved '
-              'over the bridge leave the device — that is the point of it — '
-              'so the air-gap claim holds only while this stays disconnected.',
-              style: TextStyle(
-                color: VaultColors.muted,
-                fontSize: 11,
-                height: 1.5,
-              ),
-            ),
-          ),
         ],
       ),
     );
@@ -239,12 +207,13 @@ class _BridgePageState extends State<BridgePage> {
 
   Widget _servedCard(BridgeClient c) {
     return SectionCard(
-      title: 'Served',
+      icon: Icons.swap_vert_rounded,
+      title: 'Served this session',
       child: Row(
         children: [
           Expanded(
             child: MetricTile(
-              label: 'QUERIES',
+              label: 'Queries',
               value: '${c.servedQueries}',
               accent: VaultColors.info,
             ),
@@ -252,7 +221,7 @@ class _BridgePageState extends State<BridgePage> {
           const SizedBox(width: VaultSpace.sm),
           Expanded(
             child: MetricTile(
-              label: 'DOCUMENTS',
+              label: 'Documents',
               value: '${c.servedIndexes}',
               accent: VaultColors.accent,
             ),
@@ -263,8 +232,11 @@ class _BridgePageState extends State<BridgePage> {
   }
 
   Widget _logCard(BridgeClient c) {
+    final text = Theme.of(context).textTheme;
     return SectionCard(
+      icon: Icons.receipt_long_outlined,
       title: 'Activity',
+      trailing: c.log.isEmpty ? null : VaultTag('${c.log.length}'),
       child: c.log.isEmpty
           ? const EmptyState(
               icon: Icons.terminal_rounded,
@@ -275,22 +247,23 @@ class _BridgePageState extends State<BridgePage> {
               children: [
                 for (final e in c.log.take(40))
                   Padding(
-                    padding: const EdgeInsets.only(bottom: VaultSpace.sm),
+                    padding: const EdgeInsets.symmetric(vertical: 6),
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Padding(
-                          padding: const EdgeInsets.only(top: 2),
+                          padding: const EdgeInsets.only(top: 1),
                           child: Icon(
                             switch (e.kind) {
                               BridgeEventKind.success =>
-                                Icons.check_circle_outline,
-                              BridgeEventKind.failure => Icons.error_outline,
+                                Icons.check_circle_outline_rounded,
+                              BridgeEventKind.failure =>
+                                Icons.error_outline_rounded,
                               BridgeEventKind.request =>
                                 Icons.south_west_rounded,
                               BridgeEventKind.info => Icons.circle_outlined,
                             },
-                            size: 13,
+                            size: 18,
                             color: switch (e.kind) {
                               BridgeEventKind.success => VaultColors.accent,
                               BridgeEventKind.failure => VaultColors.danger,
@@ -299,23 +272,18 @@ class _BridgePageState extends State<BridgePage> {
                             },
                           ),
                         ),
-                        const SizedBox(width: VaultSpace.sm),
+                        const SizedBox(width: VaultSpace.md),
                         Expanded(
-                          child: Text(
-                            e.message,
-                            style: const TextStyle(
-                              color: VaultColors.muted,
-                              fontSize: 11.5,
-                              height: 1.45,
-                            ),
-                          ),
+                          child: Text(e.message,
+                              style: text.bodyMedium!
+                                  .copyWith(color: VaultColors.muted)),
                         ),
                         const SizedBox(width: VaultSpace.sm),
                         Text(
                           _clock(e.at),
                           style: VaultText.mono.copyWith(
                             color: VaultColors.faint,
-                            fontSize: 10,
+                            fontSize: 12,
                           ),
                         ),
                       ],
@@ -337,8 +305,9 @@ class _BridgePageState extends State<BridgePage> {
         '# then: python query.py "your question"';
 
     return SectionCard(
+      icon: Icons.laptop_rounded,
       title: 'On the laptop',
-      subtitle: 'From the bridge/ directory of this repo.',
+      subtitle: 'From the bridge/ directory of this repo',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -352,7 +321,7 @@ class _BridgePageState extends State<BridgePage> {
                 const SnackBar(content: Text('Commands copied')),
               );
             },
-            icon: const Icon(Icons.copy_rounded, size: 17),
+            icon: const Icon(Icons.copy_rounded, size: 18),
             label: const Text('Copy commands'),
           ),
         ],

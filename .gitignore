@@ -47,3 +47,6 @@ vault_video/out/
 
 # run_eval.py output; per-machine, regenerated on every run.
 bridge/corpus/results/
+
+# Office lock files
+~$*

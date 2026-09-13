@@ -69,27 +69,48 @@ class _StatsPageState extends State<StatsPage> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(
         VaultSpace.lg,
-        VaultSpace.md,
+        VaultSpace.sm,
         VaultSpace.lg,
         VaultSpace.xxl,
       ),
       children: [
         _liveSection(),
-        const SizedBox(height: VaultSpace.md),
+        const SizedBox(height: VaultSpace.lg),
         _clocksSection(),
-        const SizedBox(height: VaultSpace.md),
-        _benchmarkSection(),
-        const SizedBox(height: VaultSpace.md),
-        _reasoningBenchmarkSection(),
+        const SizedBox(height: VaultSpace.xl),
+        _sectionHeader('Benchmarks',
+            'Numbers taken on this device, with utilisation beside each.'),
         const SizedBox(height: VaultSpace.md),
         if (widget.pipeline != null) ...[
           _pipelineBenchmarkSection(widget.pipeline!),
-          const SizedBox(height: VaultSpace.md),
+          const SizedBox(height: VaultSpace.lg),
         ],
+        _benchmarkSection(),
+        const SizedBox(height: VaultSpace.lg),
+        _reasoningBenchmarkSection(),
+        const SizedBox(height: VaultSpace.lg),
         _combinedReportSection(),
       ],
     );
   }
+
+  Widget _sectionHeader(String title, String subtitle) {
+    final text = Theme.of(context).textTheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: VaultSpace.xs),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Semantics(header: true, child: Text(title, style: text.titleLarge)),
+          const SizedBox(height: 2),
+          Text(subtitle,
+              style: text.bodyMedium!.copyWith(color: VaultColors.muted)),
+        ],
+      ),
+    );
+  }
+
+  TextTheme get _text => Theme.of(context).textTheme;
 
   // ---------------------------------------------------------------------
   // Live utilisation
@@ -105,6 +126,7 @@ class _StatsPageState extends State<StatsPage> {
       builder: (context, _) {
         final t = widget.telemetry;
         return SectionCard(
+          icon: Icons.monitor_heart_outlined,
           title: 'Live utilisation',
           subtitle: '1 Hz · last ${t.historyCapacity} s',
           trailing: _PauseButton(
@@ -115,7 +137,7 @@ class _StatsPageState extends State<StatsPage> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _laneTiles(t),
-              const SizedBox(height: VaultSpace.md),
+              const SizedBox(height: VaultSpace.lg),
               _dispatchRow(t),
               const SizedBox(height: VaultSpace.lg),
               StreamChart(
@@ -154,7 +176,7 @@ class _StatsPageState extends State<StatsPage> {
         label: '$name ${on ? 'active' : 'idle'}'
             '${busy == null ? '' : ', ${busy.toStringAsFixed(0)} percent busy'}',
         child: StatusPill(
-          label: '$name ${on ? 'ACTIVE' : 'IDLE'}'
+          label: '$name ${on ? 'active' : 'idle'}'
               '${busy == null ? '' : ' · ${busy.toStringAsFixed(0)}%'}',
           color: on ? VaultColors.accent : VaultColors.faint,
           pulsing: on,
@@ -165,29 +187,23 @@ class _StatsPageState extends State<StatsPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
-          'APP DISPATCH (RUNTIME LEASES)',
-          style: TextStyle(
-            color: VaultColors.muted,
-            fontSize: 10,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0.8,
-          ),
-        ),
-        const SizedBox(height: VaultSpace.xs),
+        Text('App dispatch', style: _text.titleSmall),
+        const SizedBox(height: 2),
+        Text('Runtime leases held by this app', style: _text.bodySmall),
+        const SizedBox(height: VaultSpace.sm),
         Wrap(
           spacing: VaultSpace.sm,
-          runSpacing: VaultSpace.xs,
+          runSpacing: VaultSpace.sm,
           children: [
             pill(ComputeHardware.npu, 'NPU'),
             pill(ComputeHardware.gpu, 'GPU'),
             pill(ComputeHardware.cpu, 'CPU'),
           ],
         ),
-        const SizedBox(height: VaultSpace.xs),
+        const SizedBox(height: VaultSpace.sm),
         Text(
           'Encoder: ${widget.engine.embeddings.acceleratorStatus.label}',
-          style: const TextStyle(color: VaultColors.faint, fontSize: 11),
+          style: _text.bodySmall,
         ),
       ],
     );
@@ -199,23 +215,18 @@ class _StatsPageState extends State<StatsPage> {
       builder: (context, _) {
         final r = runner.report;
         return SectionCard(
-          title: 'Two-model pipeline benchmark',
-          subtitle: 'MiniLM, CPU vector search and the selected reasoner timed '
-              'separately, then indexing while a capsule generates. '
-              'Retrieval-only numbers are reported on their own.',
+          icon: Icons.stacked_line_chart_rounded,
+          title: 'Two-model pipeline',
+          subtitle: 'MiniLM, vector search and the reasoner, then both at once',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               if (widget.telemetry.thermal.throttling)
                 _throttleWarning(widget.telemetry.thermal),
               if (runner.isRunning) ...[
-                const LinearProgressIndicator(
-                  backgroundColor: VaultColors.surfaceHigh,
-                  color: VaultColors.accent,
-                ),
+                const LinearProgressIndicator(),
                 const SizedBox(height: VaultSpace.sm),
-                Text(runner.detail,
-                    style: const TextStyle(color: VaultColors.muted, fontSize: 12)),
+                Text(runner.detail, style: _text.bodySmall),
                 const SizedBox(height: VaultSpace.md),
                 OutlinedButton.icon(
                   onPressed: runner.cancel,
@@ -225,14 +236,23 @@ class _StatsPageState extends State<StatsPage> {
               ] else
                 FilledButton.icon(
                   onPressed: widget.engine.isReady ? () => runner.run() : null,
-                  icon: const Icon(Icons.stacked_line_chart_rounded, size: 19),
+                  icon: const Icon(Icons.play_arrow_rounded, size: 18),
                   label: const Text('Run pipeline benchmark'),
                 ),
               if (r != null && !runner.isRunning) ...[
-                const SizedBox(height: VaultSpace.md),
+                const SizedBox(height: VaultSpace.lg),
                 _pipelineSummary(r),
                 const SizedBox(height: VaultSpace.md),
-                CodeBlock(const JsonEncoder.withIndent('  ').convert(r.toJson())),
+                ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  shape: const Border(),
+                  collapsedShape: const Border(),
+                  title: Text('Raw report', style: _text.titleSmall),
+                  children: [
+                    CodeBlock(const JsonEncoder.withIndent('  ')
+                        .convert(r.toJson())),
+                  ],
+                ),
               ],
             ],
           ),
@@ -265,22 +285,23 @@ class _StatsPageState extends State<StatsPage> {
     return Column(
       children: [
         for (final (label, value) in rows)
-          Padding(
-            padding: const EdgeInsets.only(bottom: VaultSpace.xs),
-            child: Row(
+          Container(
+            margin: const EdgeInsets.only(bottom: VaultSpace.sm),
+            padding: const EdgeInsets.all(VaultSpace.md),
+            width: double.infinity,
+            decoration: BoxDecoration(
+              color: VaultColors.surfaceHigh,
+              borderRadius: BorderRadius.circular(VaultSpace.radiusMd),
+            ),
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: Text(label,
-                      style: const TextStyle(color: VaultColors.muted, fontSize: 12)),
-                ),
-                const SizedBox(width: VaultSpace.sm),
-                Flexible(
-                  child: Text(value,
-                      textAlign: TextAlign.end,
-                      style: VaultText.mono.copyWith(
-                          color: VaultColors.foreground, fontSize: 11.5)),
-                ),
+                Text(label,
+                    style: _text.labelMedium!.copyWith(color: VaultColors.muted)),
+                const SizedBox(height: VaultSpace.xs),
+                Text(value,
+                    style: VaultText.mono.copyWith(
+                        color: VaultColors.foreground, fontSize: 14)),
               ],
             ),
           ),
@@ -377,19 +398,12 @@ class _StatsPageState extends State<StatsPage> {
               probe.kind == ProbeKind.proxy
                   ? Icons.info_outline
                   : Icons.block_outlined,
-              size: 13,
+              size: 16,
               color: VaultColors.faint,
             ),
             const SizedBox(width: VaultSpace.sm),
             Expanded(
-              child: Text(
-                '${lane.label}: $note',
-                style: const TextStyle(
-                  color: VaultColors.faint,
-                  fontSize: 11,
-                  height: 1.45,
-                ),
-              ),
+              child: Text('${lane.label}: $note', style: _text.bodySmall),
             ),
           ],
         ),
@@ -413,6 +427,7 @@ class _StatsPageState extends State<StatsPage> {
         final thermal = widget.telemetry.thermal;
 
         return SectionCard(
+          icon: Icons.smartphone_rounded,
           title: 'Device',
           subtitle: '${widget.telemetry.deviceFacts.summary}\n'
               '${snap['cores']} cores · ${widget.engine.backend} delegate · '
@@ -420,8 +435,8 @@ class _StatsPageState extends State<StatsPage> {
           trailing: thermal.isKnown
               ? StatusPill(
                   label: thermal.throttling
-                      ? 'THROTTLING'
-                      : 'THERMAL OK',
+                      ? 'Throttling'
+                      : 'Thermal OK',
                   color: thermal.throttling
                       ? VaultColors.warn
                       : VaultColors.accent,
@@ -440,7 +455,7 @@ class _StatsPageState extends State<StatsPage> {
                   SizedBox(
                     width: w,
                     child: MetricTile(
-                      label: 'CPU CLOCK',
+                      label: 'CPU clock',
                       value: fmt(snap['cpu_clock_mhz']),
                       unit: 'MHz',
                       unavailable: snap['cpu_clock_mhz'] == null,
@@ -449,7 +464,7 @@ class _StatsPageState extends State<StatsPage> {
                   SizedBox(
                     width: w,
                     child: MetricTile(
-                      label: 'GPU CLOCK',
+                      label: 'GPU clock',
                       value: fmt(snap['gpu_clock_mhz']),
                       unit: 'MHz',
                       unavailable: snap['gpu_clock_mhz'] == null,
@@ -458,7 +473,7 @@ class _StatsPageState extends State<StatsPage> {
                   SizedBox(
                     width: w,
                     child: MetricTile(
-                      label: 'RSS',
+                      label: 'Memory (RSS)',
                       value: fmt(snap['rss_mb']),
                       unit: 'MB',
                       unavailable: snap['rss_mb'] == null,
@@ -467,7 +482,7 @@ class _StatsPageState extends State<StatsPage> {
                   SizedBox(
                     width: w,
                     child: MetricTile(
-                      label: 'VAULT',
+                      label: 'Vault',
                       value: '${widget.engine.chunkCount}',
                       unit: 'chunks',
                     ),
@@ -490,33 +505,14 @@ class _StatsPageState extends State<StatsPage> {
   /// PowerManager knows; there is no sysfs equivalent an unprivileged app
   /// can read, which is the reason the method channel exists at all.
   Widget _throttleWarning(ThermalState thermal) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: VaultSpace.md),
-      padding: const EdgeInsets.all(VaultSpace.md),
-      decoration: BoxDecoration(
-        color: VaultColors.warn.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(VaultSpace.radiusSm),
-        border: Border.all(color: VaultColors.warn.withValues(alpha: 0.35)),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Icon(Icons.thermostat_rounded,
-              size: 15, color: VaultColors.warn),
-          const SizedBox(width: VaultSpace.sm),
-          Expanded(
-            child: Text(
-              'The platform reports thermal state "${thermal.label}" and is '
-              'actively limiting clocks. Numbers taken now will be slower '
-              'than this device is capable of. Let it cool and re-run.',
-              style: const TextStyle(
-                color: VaultColors.muted,
-                fontSize: 11,
-                height: 1.5,
-              ),
-            ),
-          ),
-        ],
+    return Padding(
+      padding: const EdgeInsets.only(bottom: VaultSpace.md),
+      child: Notice(
+        tone: NoticeTone.warn,
+        icon: Icons.thermostat_rounded,
+        title: 'Thermal limiting: ${thermal.label}',
+        message: 'Numbers taken now will be slower than this device is '
+            'capable of. Let it cool and re-run.',
       ),
     );
   }
@@ -531,9 +527,9 @@ class _StatsPageState extends State<StatsPage> {
       builder: (context, _) {
         final b = widget.benchmark;
         return SectionCard(
-          title: 'Benchmark',
-          subtitle: '20 timed embeddings after 3 discarded warm-ups, timed '
-              'with the interpreter’s own clock.',
+          icon: Icons.speed_rounded,
+          title: 'Encoder benchmark',
+          subtitle: '20 timed embeddings after 3 warm-ups',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -542,17 +538,9 @@ class _StatsPageState extends State<StatsPage> {
               if (b.isRunning) ...[
                 LinearProgressIndicator(
                   value: b.progress == 0 ? null : b.progress,
-                  backgroundColor: VaultColors.surfaceHigh,
-                  color: VaultColors.accent,
                 ),
                 const SizedBox(height: VaultSpace.sm),
-                Text(
-                  b.detail,
-                  style: const TextStyle(
-                    color: VaultColors.muted,
-                    fontSize: 12,
-                  ),
-                ),
+                Text(b.detail, style: _text.bodySmall),
                 const SizedBox(height: VaultSpace.md),
                 OutlinedButton.icon(
                   onPressed: b.cancel,
@@ -569,7 +557,7 @@ class _StatsPageState extends State<StatsPage> {
                 const SizedBox(height: VaultSpace.md),
                 FilledButton.icon(
                   onPressed: widget.engine.isReady ? _runBenchmark : null,
-                  icon: const Icon(Icons.speed_rounded, size: 19),
+                  icon: const Icon(Icons.play_arrow_rounded, size: 18),
                   label: Text(
                     b.report == null ? 'Run benchmark' : 'Run again',
                   ),
@@ -605,15 +593,7 @@ class _StatsPageState extends State<StatsPage> {
         ],
         if (r.comparison.isNotEmpty) ...[
           const SizedBox(height: VaultSpace.lg),
-          const Text(
-            'BACKEND COMPARISON',
-            style: TextStyle(
-              color: VaultColors.muted,
-              fontSize: 10.5,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.8,
-            ),
-          ),
+          Text('Backend comparison', style: _text.titleSmall),
           const SizedBox(height: VaultSpace.sm),
           for (final c in r.comparison) ...[
             if (c.isAvailable)
@@ -624,16 +604,12 @@ class _StatsPageState extends State<StatsPage> {
                 child: Row(
                   children: [
                     const Icon(Icons.block_outlined,
-                        size: 14, color: VaultColors.faint),
+                        size: 16, color: VaultColors.faint),
                     const SizedBox(width: VaultSpace.sm),
                     Expanded(
                       child: Text(
                         '${c.backend} unavailable — ${c.unavailableReason}',
-                        style: const TextStyle(
-                          color: VaultColors.faint,
-                          fontSize: 11,
-                          height: 1.4,
-                        ),
+                        style: _text.bodySmall,
                       ),
                     ),
                   ],
@@ -644,7 +620,7 @@ class _StatsPageState extends State<StatsPage> {
         const SizedBox(height: VaultSpace.lg),
         OutlinedButton.icon(
           onPressed: () => _copyReport(r),
-          icon: const Icon(Icons.copy_rounded, size: 17),
+          icon: const Icon(Icons.copy_rounded, size: 18),
           label: const Text('Copy report as JSON'),
         ),
       ],
@@ -662,22 +638,15 @@ class _StatsPageState extends State<StatsPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                k,
-                style: const TextStyle(
-                  color: VaultColors.faint,
-                  fontSize: 9.5,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.5,
-                ),
-              ),
+              Text(k,
+                  style: _text.labelSmall!.copyWith(color: VaultColors.muted)),
               const SizedBox(height: 2),
               Text(
                 v,
+                maxLines: 1,
                 style: VaultText.mono.copyWith(
                   color: color ?? VaultColors.foreground,
                   fontSize: 13,
-                  fontWeight: FontWeight.w600,
                 ),
               ),
             ],
@@ -689,35 +658,27 @@ class _StatsPageState extends State<StatsPage> {
       padding: const EdgeInsets.all(VaultSpace.md),
       decoration: BoxDecoration(
         color: VaultColors.surfaceHigh,
-        borderRadius: BorderRadius.circular(VaultSpace.radiusSm),
-        border: Border.all(color: VaultColors.border),
+        borderRadius: BorderRadius.circular(VaultSpace.radiusMd),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            label,
-            style: const TextStyle(
-              color: VaultColors.muted,
-              fontSize: 11.5,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
+          Text(label, style: _text.labelLarge),
           const SizedBox(height: VaultSpace.md),
           Row(
             children: [
-              cell('MEDIAN', '${s.median.toStringAsFixed(0)} ms',
+              cell('Median', '${s.median.toStringAsFixed(0)} ms',
                   color: VaultColors.accent),
               cell('P90', '${s.p90.toStringAsFixed(0)} ms'),
-              cell('MIN', '${s.min.toStringAsFixed(0)} ms'),
-              cell('MAX', '${s.max.toStringAsFixed(0)} ms'),
+              cell('Min', '${s.min.toStringAsFixed(0)} ms'),
+              cell('Max', '${s.max.toStringAsFixed(0)} ms'),
               cell('σ', '${s.stdDev.toStringAsFixed(1)} ms'),
             ],
           ),
           const SizedBox(height: VaultSpace.sm),
           Text(
             '${s.throughputPerSecond.toStringAsFixed(2)}/s over ${s.count} runs',
-            style: const TextStyle(color: VaultColors.faint, fontSize: 10.5),
+            style: _text.bodySmall!.copyWith(color: VaultColors.faint),
           ),
           if (usage != null) ...[
             const SizedBox(height: VaultSpace.sm),
@@ -748,7 +709,8 @@ class _StatsPageState extends State<StatsPage> {
         color: usage.thermal?.throttling == true
             ? VaultColors.warn
             : VaultColors.faint,
-        fontSize: 10,
+        fontSize: 12,
+        height: 1.4,
         fontFamily: VaultText.mono.fontFamily,
       ),
     );
@@ -783,13 +745,11 @@ class _StatsPageState extends State<StatsPage> {
         final b = widget.llmBenchmark;
         final llm = widget.llm;
         return SectionCard(
-          title: 'Reasoning benchmark',
+          icon: Icons.psychology_outlined,
+          title: 'MediaPipe reasoning benchmark',
           subtitle: llm.isReady
-              ? '5 timed generations after 1 discarded warm-up, on '
-                  '${llm.backendLabel.toUpperCase()} — CPU/GPU/NPU '
-                  'utilisation averaged over the run.'
-              : 'Load a model on the Model tab, then benchmark generation '
-                  'here.',
+              ? '5 timed generations on ${llm.backendLabel.toUpperCase()}'
+              : 'Needs a MediaPipe model loaded on the Model tab',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -798,15 +758,9 @@ class _StatsPageState extends State<StatsPage> {
               if (b.isRunning) ...[
                 LinearProgressIndicator(
                   value: b.progress == 0 ? null : b.progress,
-                  backgroundColor: VaultColors.surfaceHigh,
-                  color: VaultColors.accent,
                 ),
                 const SizedBox(height: VaultSpace.sm),
-                Text(
-                  b.detail,
-                  style:
-                      const TextStyle(color: VaultColors.muted, fontSize: 12),
-                ),
+                Text(b.detail, style: _text.bodySmall),
                 const SizedBox(height: VaultSpace.md),
                 OutlinedButton.icon(
                   onPressed: b.cancel,
@@ -816,7 +770,7 @@ class _StatsPageState extends State<StatsPage> {
               ] else
                 FilledButton.icon(
                   onPressed: llm.isReady ? () => b.run() : null,
-                  icon: const Icon(Icons.psychology_rounded, size: 19),
+                  icon: const Icon(Icons.play_arrow_rounded, size: 18),
                   label: Text(b.report == null ? 'Run benchmark' : 'Run again'),
                 ),
               if (b.report != null) ...[
@@ -836,7 +790,7 @@ class _StatsPageState extends State<StatsPage> {
       children: [
         Text(
           '${r.modelLabel} · loaded in ${r.loadMs} ms',
-          style: const TextStyle(color: VaultColors.faint, fontSize: 11),
+          style: _text.bodySmall,
         ),
         const SizedBox(height: VaultSpace.sm),
         _statRow(
@@ -850,33 +804,17 @@ class _StatsPageState extends State<StatsPage> {
             '${r.meanTokensPerSecond!.toStringAsFixed(1)} tokens/s mean · '
             '${r.tokensPerSecond.length}/${r.latency.count} runs reported '
             'a token count',
-            style: const TextStyle(color: VaultColors.faint, fontSize: 10.5),
+            style: _text.bodySmall,
           ),
         ],
         if (r.error != null) ...[
           const SizedBox(height: VaultSpace.sm),
-          Container(
-            padding: const EdgeInsets.all(VaultSpace.md),
-            decoration: BoxDecoration(
-              color: VaultColors.warn.withValues(alpha: 0.08),
-              borderRadius: BorderRadius.circular(VaultSpace.radiusSm),
-              border:
-                  Border.all(color: VaultColors.warn.withValues(alpha: 0.3)),
-            ),
-            child: Text(
-              r.error!,
-              style: const TextStyle(
-                color: VaultColors.muted,
-                fontSize: 11.5,
-                height: 1.5,
-              ),
-            ),
-          ),
+          Notice(tone: NoticeTone.warn, message: r.error!),
         ],
         const SizedBox(height: VaultSpace.lg),
         OutlinedButton.icon(
           onPressed: () => _copyLlmReport(r),
-          icon: const Icon(Icons.copy_rounded, size: 17),
+          icon: const Icon(Icons.copy_rounded, size: 18),
           label: const Text('Copy report as JSON'),
         ),
       ],
@@ -907,19 +845,27 @@ class _StatsPageState extends State<StatsPage> {
         final hasEmbedding = widget.benchmark.report != null;
         final hasReasoning = widget.llmBenchmark.report != null;
         return SectionCard(
+          icon: Icons.summarize_outlined,
           title: 'Hardware split report',
-          subtitle: 'One export combining both benchmarks above — encoder '
-              'and reasoning model, each against the CPU/GPU/NPU numbers '
-              'measured while it ran.',
+          subtitle: 'Both benchmarks in one JSON export',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(
-                '${hasEmbedding ? 'embedding ✓' : 'embedding — not run yet'}'
-                '   ·   '
-                '${hasReasoning ? 'reasoning ✓' : 'reasoning — not run yet'}',
-                style:
-                    const TextStyle(color: VaultColors.faint, fontSize: 11.5),
+              Wrap(
+                spacing: VaultSpace.sm,
+                runSpacing: VaultSpace.sm,
+                children: [
+                  VaultTag('Encoder',
+                      icon: hasEmbedding
+                          ? Icons.check_rounded
+                          : Icons.schedule_rounded,
+                      selected: hasEmbedding),
+                  VaultTag('Reasoning',
+                      icon: hasReasoning
+                          ? Icons.check_rounded
+                          : Icons.schedule_rounded,
+                      selected: hasReasoning),
+                ],
               ),
               const SizedBox(height: VaultSpace.md),
               OutlinedButton.icon(
@@ -968,8 +914,6 @@ class _PauseButton extends StatelessWidget {
       message: paused ? 'Resume sampling' : 'Pause sampling',
       child: IconButton(
         onPressed: () => onChanged(!paused),
-        // 44 dp minimum touch target.
-        constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
         icon: Icon(
           paused ? Icons.play_arrow_rounded : Icons.pause_rounded,
           color: paused ? VaultColors.accent : VaultColors.muted,
@@ -1003,19 +947,19 @@ class _LegendChip extends StatelessWidget {
       label: '${lane.label} series, ${hidden ? 'hidden' : 'shown'}',
       child: InkWell(
         onTap: unavailable ? null : onTap,
-        borderRadius: BorderRadius.circular(999),
+        borderRadius: BorderRadius.circular(VaultSpace.radiusSm),
         child: Container(
           // 44 dp is unreachable for an inline legend chip without wrecking
           // the layout; 34 with generous horizontal padding is the
           // compromise, and every chip has a larger duplicate control (the
           // tile above) that is not a tap target at all.
-          constraints: const BoxConstraints(minHeight: 34),
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          constraints: const BoxConstraints(minHeight: 36),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
-            color: VaultColors.surfaceHigh,
-            borderRadius: BorderRadius.circular(999),
+            color: dim ? Colors.transparent : VaultColors.surfaceHigh,
+            borderRadius: BorderRadius.circular(VaultSpace.radiusSm),
             border: Border.all(
-              color: dim ? VaultColors.border : style.color.withValues(alpha: 0.5),
+              color: dim ? VaultColors.border : Colors.transparent,
             ),
           ),
           child: Row(
@@ -1033,18 +977,17 @@ class _LegendChip extends StatelessWidget {
               const SizedBox(width: 7),
               Text(
                 lane.label,
-                style: TextStyle(
+                style: Theme.of(context).textTheme.labelLarge!.copyWith(
                   color: dim ? VaultColors.faint : VaultColors.foreground,
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.w600,
                   decoration: hidden ? TextDecoration.lineThrough : null,
                 ),
               ),
               if (unavailable) ...[
                 const SizedBox(width: 5),
-                const Text(
+                Text(
                   'n/a',
-                  style: TextStyle(color: VaultColors.faint, fontSize: 10),
+                  style: Theme.of(context).textTheme.labelMedium!
+                      .copyWith(color: VaultColors.faint),
                 ),
               ],
             ],
@@ -1119,18 +1062,14 @@ class _BackendSweepPicker extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
-          'ALSO SWEEP',
-          style: TextStyle(
-            color: VaultColors.muted,
-            fontSize: 10,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0.8,
-          ),
-        ),
+        Text('Also sweep', style: text.titleSmall),
+        const SizedBox(height: 2),
+        Text('Each builds its own interpreter; a failed build is reported.',
+            style: text.bodySmall),
         const SizedBox(height: VaultSpace.xs),
         for (final (backend, label, detail) in _options)
           InkWell(
@@ -1143,27 +1082,15 @@ class _BackendSweepPicker extends StatelessWidget {
                   Checkbox(
                     value: selected.contains(backend),
                     onChanged: (_) => onChanged(backend),
-                    side: const BorderSide(color: VaultColors.borderStrong),
                   ),
+                  const SizedBox(width: VaultSpace.xs),
                   Expanded(
-                    child: RichText(
-                      text: TextSpan(
-                        style: const TextStyle(
-                          color: VaultColors.faint,
-                          fontSize: 11.5,
-                          height: 1.4,
-                        ),
-                        children: [
-                          TextSpan(
-                            text: '$label  ',
-                            style: const TextStyle(
-                              color: VaultColors.foreground,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          TextSpan(text: detail),
-                        ],
-                      ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(label, style: text.bodyMedium),
+                        Text(detail, style: text.bodySmall),
+                      ],
                     ),
                   ),
                 ],
@@ -1174,10 +1101,8 @@ class _BackendSweepPicker extends StatelessWidget {
           const SizedBox(height: VaultSpace.xs),
           Text(
             '${selected.length} backend${selected.length == 1 ? '' : 's'} '
-            'selected — each builds its own interpreter and times it '
-            'separately, on top of the live run. A failed build is '
-            'reported, not hidden.',
-            style: const TextStyle(color: VaultColors.faint, fontSize: 10.5),
+            'selected, timed separately on top of the live run.',
+            style: text.bodySmall,
           ),
         ],
       ],
