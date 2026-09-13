@@ -25,6 +25,10 @@ dependencies:
   # flutter_test tooling; declared directly now that lib/ imports it. Pure
   # Dart, dart-lang maintained, no native code, no network.
   crypto: ^3.0.6
+  # FFI string marshalling for the QNN HTP delegate shim
+  # (lib/core/qnn/qnn_htp_delegate.dart). Already locked transitively via
+  # tflite_flutter; declared because lib/ now imports it directly.
+  ffi: ^2.1.0
 
 dev_dependencies:
   flutter_test:

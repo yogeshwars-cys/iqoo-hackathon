@@ -1,3 +1,5 @@
+val qnnVersion = "2.50.0"
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
@@ -41,6 +43,10 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        // Reported next to every QNN status so a result names the runtime it
+        // came from. Keep in step with the dependency version below.
+        buildConfigField("String", "QNN_RUNTIME_VERSION", "\"$qnnVersion\"")
 
         // The real target is the iQOO 15 (arm64-v8a) only. Building llama.cpp
         // a second and third time for armeabi-v7a/x86_64 — ABIs nothing here
@@ -90,6 +96,42 @@ android {
         }
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+
+    // QUALCOMM QNN HTP — MiniLM EMBEDDINGS ONLY (llama.cpp never uses the NPU;
+    // GGML_HEXAGON stays off in src/main/cpp/CMakeLists.txt).
+    //
+    // useLegacyPackaging: the HTP skel (libQnnHtpV81Skel.so) is loaded by the
+    // Hexagon DSP's own loader through FastRPC, which opens it as a FILE from
+    // skel_library_dir. Libraries left compressed inside the APK have no
+    // file path, so without extraction the NPU cannot start at all.
+    //
+    // Skel/stub pairs kept: V81 (Snapdragon 8 Elite Gen 5, SM8850 — the
+    // iQOO 15) and V79 (Snapdragon 8 Elite, SM8750). Older Hexagon versions,
+    // the QNN GPU backend (the GPU belongs to llama.cpp) and the legacy DSP
+    // backend are dropped: ~60 MB this device can never load.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+            excludes += listOf(
+                "**/libQnnGpu.so",
+                "**/libQnnDsp.so",
+                "**/libQnnDspV66Skel.so",
+                "**/libQnnDspV66Stub.so",
+                "**/libQnnHtpV68Skel.so",
+                "**/libQnnHtpV68Stub.so",
+                "**/libQnnHtpV69Skel.so",
+                "**/libQnnHtpV69Stub.so",
+                "**/libQnnHtpV73Skel.so",
+                "**/libQnnHtpV73Stub.so",
+                "**/libQnnHtpV75Skel.so",
+                "**/libQnnHtpV75Stub.so",
+            )
+        }
+    }
+
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.
@@ -118,6 +160,15 @@ dependencies {
     // ago), and a silent bump would break the build at a point far from the
     // change.
     implementation("com.google.mediapipe:tasks-genai:0.10.24")
+
+    // Qualcomm AI Engine Direct (QNN) for LiteRT, from Maven Central.
+    // qnn-runtime: libQnnHtp.so, libQnnHtpPrepare.so, libQnnSystem.so and the
+    // per-Hexagon-version skel/stub pairs. qnn-litert-delegate:
+    // libQnnTFLiteDelegate.so, which vault_qnn_delegate.cpp dlopen()s through
+    // the TFLite external-delegate plugin ABI.
+    // Licence: Qualcomm AI Hub Model License (see the AARs' LICENSE.pdf).
+    implementation("com.qualcomm.qti:qnn-runtime:$qnnVersion")
+    implementation("com.qualcomm.qti:qnn-litert-delegate:$qnnVersion")
 }
 
 kotlin {

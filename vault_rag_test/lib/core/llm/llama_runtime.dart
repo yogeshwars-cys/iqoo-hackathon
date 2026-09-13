@@ -32,6 +32,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import '../compute_ledger.dart';
+
 const _channel = MethodChannel('vault/llama');
 
 enum LlamaBackend { cpu, gpu, npu }
@@ -78,11 +80,38 @@ class LlamaGeneration {
       };
 }
 
+/// Maps llama.cpp's backend status (LlamaChannel `load` / `backendStatus`)
+/// to the hardware generation actually runs on: the device named by
+/// `loaded_backend`, looked up by type in ggml's own device registry.
+/// Anything unrecognised is CPU — never a guessed accelerator, and never NPU
+/// (GGML_HEXAGON is off; the NPU belongs to the MiniLM encoder).
+ComputeHardware hardwareFromLlamaStatus(Map<String, dynamic>? status) {
+  final loaded = status?['loaded_backend'] as String?;
+  if (loaded == null || loaded == 'CPU' || loaded == 'none') {
+    return ComputeHardware.cpu;
+  }
+  final devices = (status?['devices'] as List?) ?? const [];
+  for (final d in devices) {
+    if (d is! Map) continue;
+    final name = d['name'] as String? ?? '';
+    if (name.isEmpty || !loaded.contains(name)) continue;
+    return switch (d['type']) {
+      'gpu' || 'igpu' => ComputeHardware.gpu,
+      _ => ComputeHardware.cpu,
+    };
+  }
+  return ComputeHardware.cpu;
+}
+
 class LlamaRuntime extends ChangeNotifier {
   /// Same purpose as [LlmRuntime.onGeneration]: feeds the telemetry screen's
   /// duty-cycle lane. A callback rather than an import, for the same reason
   /// documented there — core/ stays free of a dependency on telemetry/.
   void Function(int micros)? onGeneration;
+
+  /// Receives a lease for every generation, on the hardware ggml actually
+  /// loaded the model onto (see [confirmedHardware]).
+  ComputeLedger ledger = const NullComputeLedger();
 
   LlamaState _state = LlamaState.unloaded;
   String? _error;
@@ -114,6 +143,14 @@ class LlamaRuntime extends ChangeNotifier {
   /// ("record proof from the runtime... never report GPU/NPU usage unless
   /// the runtime confirms execution"), not a label chosen ahead of time.
   Map<String, dynamic>? get backendStatusSnapshot => _backendStatus;
+
+  /// The hardware generation runs on, from the runtime's own report:
+  /// `loaded_backend` in the load status is the ggml device the weights were
+  /// offloaded to, matched against ggml's device registry by type. Never
+  /// derived from the button the user pressed, and never NPU — this build
+  /// does not enable GGML_HEXAGON; the NPU is reserved for embeddings.
+  ComputeHardware get confirmedHardware =>
+      hardwareFromLlamaStatus(_backendStatus);
 
   String get modelLabel {
     final path = _modelPath;
@@ -223,6 +260,11 @@ class LlamaRuntime extends ChangeNotifier {
       _isGenerating = true;
       _notify();
 
+      final lease = ledger.begin(
+        confirmedHardware,
+        'llama.cpp',
+        evidence: 'ggml loaded_backend=${_backendStatus?['loaded_backend']}',
+      );
       try {
         final result = await _channel.invokeMapMethod<String, dynamic>(
           'generate',
@@ -239,6 +281,7 @@ class LlamaRuntime extends ChangeNotifier {
       } catch (e, st) {
         completer.completeError(e, st);
       } finally {
+        lease.end();
         _isGenerating = false;
         _notify();
       }
@@ -252,6 +295,7 @@ class LlamaRuntime extends ChangeNotifier {
         'path': _modelPath,
         'backend': _backend?.name,
         'load_ms': _loadMs,
+        'confirmed_hardware': _state == LlamaState.ready ? confirmedHardware.name : null,
         'max_tokens': _maxTokens,
         if (_backendStatus != null) 'backend_status': _backendStatus,
         if (_error != null) 'error': _error,

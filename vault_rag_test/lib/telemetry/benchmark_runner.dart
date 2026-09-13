@@ -61,6 +61,7 @@ class LatencyStats {
   double get max => isEmpty ? 0 : samplesMs.last;
   double get median => _percentile(50);
   double get p90 => _percentile(90);
+  double get p95 => _percentile(95);
 
   double get mean =>
       isEmpty ? 0 : samplesMs.reduce((a, b) => a + b) / samplesMs.length;
@@ -93,6 +94,7 @@ class LatencyStats {
         'min_ms': double.parse(min.toStringAsFixed(2)),
         'median_ms': double.parse(median.toStringAsFixed(2)),
         'p90_ms': double.parse(p90.toStringAsFixed(2)),
+        'p95_ms': double.parse(p95.toStringAsFixed(2)),
         'max_ms': double.parse(max.toStringAsFixed(2)),
         'mean_ms': double.parse(mean.toStringAsFixed(2)),
         'stddev_ms': double.parse(stdDev.toStringAsFixed(2)),

@@ -165,7 +165,7 @@ def test_modified_timestamp_is_rejected():
 
 def test_modified_gating_path_is_rejected():
     def m(c):
-        c["provenance"]["gating_path"] = "llm_synthesized"
+        c["provenance"]["gating_path"] = "extractive_fallback"
     assert _tampered(m).status is cv.Status.INVALID_SIGNATURE
 
 

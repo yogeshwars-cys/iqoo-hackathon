@@ -61,7 +61,7 @@ void main() {
       String query = 'q',
       String answer = 'a',
       int timestamp = 1,
-      String gating = 'extractive_early_exit',
+      String gating = 'extractive_fallback',
       List<String> ids = const ['c0'],
     }) =>
         CanonicalCapsule(
@@ -108,7 +108,7 @@ void main() {
       expect(p.publicKey, isNull);
       expect(p.keySecurityLevel, 'none');
       expect(p.enclave, contains('host-test'));
-      expect(p.gatingPath, 'extractive_early_exit');
+      expect(p.gatingPath, 'extractive_fallback');
       expect(p.timestamp, unsigned.timestamp);
     });
 
@@ -141,7 +141,7 @@ void main() {
         () async {
       final c = ContextCapsule.fromRetrievalOnly(
         resultWithTopScore(0.9),
-        gatingPath: GatingPath.extractiveEarlyExit,
+        gatingPath: GatingPath.extractiveFallback,
       );
       expect(c.query, c.query.trim());
       expect(c.answer, c.answer.trim());
@@ -151,7 +151,7 @@ void main() {
 
 Future<ContextCapsule> _tier1Capsule() async => ContextCapsule.fromRetrievalOnly(
       resultWithTopScore(0.9),
-      gatingPath: GatingPath.extractiveEarlyExit,
+      gatingPath: GatingPath.extractiveFallback,
       timestamp: 1773368291000,
     );
 

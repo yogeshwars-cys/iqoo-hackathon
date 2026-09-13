@@ -25,6 +25,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 // Float32List comes in via foundation, which re-exports dart:typed_data.
 import 'package:flutter/foundation.dart';
@@ -35,8 +36,7 @@ import 'embedding_service.dart';
 import 'gating.dart';
 import 'llm/capsule.dart';
 import 'llm/capsule_prompt.dart';
-import 'llm/llama_runtime.dart';
-import 'llm/llm_runtime.dart';
+import 'llm/reasoner_coordinator.dart';
 import 'security/capsule_signer.dart';
 import 'security/security_constants.dart';
 import 'vector_store.dart';
@@ -99,6 +99,13 @@ class SearchResult {
   /// Of which, keystore decryption of the top-K winners only.
   final int decryptMicros;
 
+  /// The encoder's verified accelerator label ("QNN HTP verified",
+  /// "QNN unavailable", "XNNPACK fallback", or the plain backend name) and
+  /// the hardware that implies. Carried into capsules so a label is always
+  /// the runtime's result, never a guess from device branding.
+  final String embeddingBackend;
+  final String embeddingHardware;
+
   const SearchResult({
     required this.query,
     required this.chunks,
@@ -108,6 +115,8 @@ class SearchResult {
     required this.totalIndexed,
     this.rankMicros = 0,
     this.decryptMicros = 0,
+    this.embeddingBackend = 'unknown',
+    this.embeddingHardware = 'unknown',
   });
 
   /// The wire shape the desktop bridge, the MCP tools and query.py expect.
@@ -130,6 +139,8 @@ class SearchResult {
         'latency_ms': latencyMs,
         'embed_ms': embedMs,
         'rank_us': rankMicros,
+        'embedding_backend': embeddingBackend,
+        'embedding_hardware': embeddingHardware,
         'decrypt_us': decryptMicros,
         'total_indexed': totalIndexed,
       };
@@ -141,7 +152,18 @@ class SynthesisOutput {
   final int elapsedMs;
   final int? tokens;
 
-  const SynthesisOutput({required this.text, required this.elapsedMs, this.tokens});
+  /// Prompt processing and decode split, when the runtime reports them
+  /// (llama.cpp does, from ggml_time_us; MediaPipe does not).
+  final int? prefillMs;
+  final int? decodeMs;
+
+  const SynthesisOutput({
+    required this.text,
+    required this.elapsedMs,
+    this.tokens,
+    this.prefillMs,
+    this.decodeMs,
+  });
 }
 
 /// The tier-2 language model, behind one interface so [VaultEngine.ask]'s
@@ -154,45 +176,6 @@ abstract interface class CapsuleSynthesizer {
   Future<SynthesisOutput> synthesize(SearchResult result);
 }
 
-/// llama.cpp: unwrapped content, the runtime applies the GGUF's template.
-class _LlamaSynthesizer implements CapsuleSynthesizer {
-  final LlamaRuntime runtime;
-  _LlamaSynthesizer(this.runtime);
-
-  @override
-  bool get isReady => runtime.isReady;
-  @override
-  String get modelLabel => runtime.modelLabel;
-  @override
-  String get backendLabel => 'llama.cpp/${runtime.backend?.label ?? "?"}';
-
-  @override
-  Future<SynthesisOutput> synthesize(SearchResult result) async {
-    final g = await runtime.generate(buildCapsuleContent(result));
-    return SynthesisOutput(
-        text: g.text, elapsedMs: g.prefillMs + g.decodeMs, tokens: g.tokens);
-  }
-}
-
-/// MediaPipe/Gemma: hand-wrapped Gemma turn markers — see capsule_prompt.dart.
-class _MediaPipeSynthesizer implements CapsuleSynthesizer {
-  final LlmRuntime runtime;
-  _MediaPipeSynthesizer(this.runtime);
-
-  @override
-  bool get isReady => runtime.isReady;
-  @override
-  String get modelLabel => runtime.modelLabel;
-  @override
-  String get backendLabel => runtime.backendLabel;
-
-  @override
-  Future<SynthesisOutput> synthesize(SearchResult result) async {
-    final g = await runtime.generate(buildCapsulePrompt(result));
-    return SynthesisOutput(text: g.text, elapsedMs: g.elapsedMs, tokens: g.tokens);
-  }
-}
-
 /// Lifecycle of the engine, so the UI can render each state honestly rather
 /// than showing a disabled button with no explanation.
 enum EngineState { loading, ready, failed }
@@ -201,23 +184,18 @@ class VaultEngine extends ChangeNotifier {
   final MiniLMEmbeddingService embeddings;
   final Chunker chunker;
 
-  /// Optional generation stage. The engine works fully without it — [ask]
-  /// falls back to a retrieval-only capsule — so nothing here may assume a
-  /// model is loaded.
-  LlmRuntime? llm;
-
-  /// The llama.cpp/GGUF path, independent of [llm] — see
-  /// llama_runtime.dart's file header for why both exist side by side.
-  /// [ask] prefers this one when it is ready, since loading a GGUF model is
-  /// the more deliberate, specific action of the two.
-  LlamaRuntime? llama;
+  /// The single selected reasoner (see reasoner_coordinator.dart). Optional:
+  /// the engine works fully without one — [ask] degrades to the extractive
+  /// capsule — so nothing here may assume a model is loaded.
+  ///
+  /// This replaced two independent `llm` / `llama` fields and an implicit
+  /// "llama.cpp wins when both are ready" rule. Routing now follows the
+  /// persisted selection and nothing else.
+  ReasonerCoordinator? reasoner;
 
   /// Forces a specific tier-2 model (tests). When null, [llama] then [llm].
   @visibleForTesting
   CapsuleSynthesizer? synthesizerOverride;
-
-  /// Score gates for [ask]. See gating.dart before changing the defaults.
-  GatingPolicy gatingPolicy;
 
   /// Signs every capsule [ask] returns.
   CapsuleSigner signer;
@@ -241,7 +219,6 @@ class VaultEngine extends ChangeNotifier {
   VaultEngine({
     MiniLMEmbeddingService? embeddings,
     Chunker? chunker,
-    this.gatingPolicy = GatingPolicy.standard,
     CapsuleSigner? signer,
     this.chunkCipher = const KeystoreChunkCipher(),
   })  : embeddings = embeddings ?? MiniLMEmbeddingService(),
@@ -403,28 +380,24 @@ class VaultEngine extends ChangeNotifier {
         totalIndexed: store.count,
         rankMicros: store.lastRankMicros,
         decryptMicros: store.lastDecryptMicros,
+        embeddingBackend: embeddings.acceleratorStatus.label,
+        embeddingHardware: embeddings.acceleratorStatus.hardware.name,
       );
     });
   }
 
-  /// Retrieval, a three-tier gate, and a signed context capsule.
+  /// Retrieval, then the selected reasoner, then a signed context capsule.
   ///
   /// NOT wrapped in [_serialized], and that is load-bearing rather than an
   /// oversight: it calls [search], which takes the lock itself. Nesting the
   /// two would deadlock the engine on the first query. Generation has its own
   /// queue inside whichever runtime answers.
   ///
-  /// THE GATE (gating.dart), decided on the best retrieval score alone:
-  ///
-  ///   >= 0.82       extractive_early_exit      the LLM is never touched
-  ///   0.50 – 0.82   llm_synthesized            llama.cpp if ready, else
-  ///                                            MediaPipe; extractive_fallback
-  ///                                            if neither can run
-  ///   < 0.50        below_relevance_threshold  fixed refusal, no LLM
-  ///
-  /// Tier 1 and 3 never read [llama] or [llm] beyond this method's gate, so
-  /// a deterministic hit costs embed + rank + top-K decrypt and nothing
-  /// else. Whatever the tier, the capsule is signed before it is returned.
+  /// When a reasoner is loaded and [generate] is on, it writes the answer for
+  /// every query that retrieved context — no similarity gate decides whether
+  /// the model is worth running (see gating.dart for why that was removed).
+  /// With no model, generation off, nothing retrieved, or a failed
+  /// generation, the capsule falls back to the extractive answer and says so.
   Future<ContextCapsule> ask(
     String query, {
     int topK = 5,
@@ -435,8 +408,8 @@ class VaultEngine extends ChangeNotifier {
     return signer.sign(capsule);
   }
 
-  /// The gate itself, over an existing [SearchResult]. Split from [ask] so
-  /// it is testable without an encoder or a database.
+  /// Everything after retrieval, over an existing [SearchResult]. Split from
+  /// [ask] so it is testable without an encoder or a database.
   @visibleForTesting
   Future<ContextCapsule> buildCapsule(
     SearchResult result, {
@@ -446,27 +419,16 @@ class VaultEngine extends ChangeNotifier {
     for (final c in result.chunks) {
       if (top == null || c.score > top) top = c.score;
     }
-    final path = gatingPolicy.decide(top);
-    final gating = <String, dynamic>{
+    final info = <String, dynamic>{
       'top_score': top == null ? null : double.parse(top.toStringAsFixed(4)),
-      ...gatingPolicy.toJson(),
     };
 
-    switch (path) {
-      case GatingPath.extractiveEarlyExit:
-        return ContextCapsule.fromRetrievalOnly(result,
-            gatingPath: GatingPath.extractiveEarlyExit, gating: gating);
-      case GatingPath.belowRelevanceThreshold:
-        return ContextCapsule.belowRelevanceThreshold(result, gating: gating);
-      case GatingPath.llmSynthesized:
-      case GatingPath.extractiveFallback:
-        break;
-    }
-
     final synthesizer = generate ? _activeSynthesizer() : null;
-    if (synthesizer == null) {
+    // Nothing retrieved means nothing to reason over: running the model
+    // would only have it say it does not know.
+    if (synthesizer == null || result.chunks.isEmpty) {
       return ContextCapsule.fromRetrievalOnly(result,
-          gatingPath: GatingPath.extractiveFallback, gating: gating);
+          gatingPath: GatingPath.extractiveFallback, gating: info);
     }
 
     final model = synthesizer.modelLabel;
@@ -480,7 +442,7 @@ class VaultEngine extends ChangeNotifier {
         backend: backend,
         elapsedMs: generated.elapsedMs,
         tokens: generated.tokens,
-        gating: gating,
+        gating: info,
       );
     } catch (e) {
       // A generation failure must never lose the retrieval. The capsule
@@ -488,7 +450,7 @@ class VaultEngine extends ChangeNotifier {
       return ContextCapsule.fromRetrievalOnly(
         result,
         gatingPath: GatingPath.extractiveFallback,
-        gating: gating,
+        gating: info,
         generation: CapsuleGeneration(
           ran: true,
           model: model,
@@ -504,16 +466,28 @@ class VaultEngine extends ChangeNotifier {
   CapsuleSynthesizer? _activeSynthesizer() {
     final forced = synthesizerOverride;
     if (forced != null) return forced.isReady ? forced : null;
-    final activeLlama = llama;
-    if (activeLlama != null && activeLlama.isReady) {
-      return _LlamaSynthesizer(activeLlama);
-    }
-    final activeLlm = llm;
-    if (activeLlm != null && activeLlm.isReady) {
-      return _MediaPipeSynthesizer(activeLlm);
-    }
-    return null;
+    return reasoner?.activeSynthesizer;
   }
+
+  /// Microseconds for one in-RAM ranking of [query] against the live store —
+  /// CPU vector search only: no encoder, no SQLite, no decryption.
+  Future<int> benchmarkRankMicros(Float32List query, {int k = 5}) =>
+      _serialized(() async {
+        final store = _requireStore();
+        store.rank(query, k: k);
+        return store.lastRankMicros;
+      });
+
+  /// The per-chunk cost of indexing — embed, then AES-GCM encrypt through
+  /// the keystore — WITHOUT writing to the vault, so a sustained-load
+  /// benchmark leaves the user's corpus untouched. Returns native inference
+  /// microseconds for the embedding.
+  Future<int> indexingWorkload(String chunkText) => _serialized(() async {
+        await embeddings.embed(chunkText);
+        final micros = embeddings.lastInferenceMicros;
+        await chunkCipher.encrypt(Uint8List.fromList(utf8.encode(chunkText)));
+        return micros;
+      });
 
   /// One embedding, for the benchmark harness. Goes through the same lock
   /// as everything else so a benchmark cannot race a bridge query.
@@ -543,10 +517,25 @@ class VaultEngine extends ChangeNotifier {
         'sequence_length': embeddings.sequenceLength,
         'model_load_ms': _modelLoadMs,
         'total_indexed': chunkCount,
-        'llm': llm?.describe() ?? {'state': 'unloaded'},
-        'llama': llama?.describe() ?? {'state': 'unloaded'},
+        'embedding_status': embeddings.acceleratorStatus.toJson(),
+        'reasoner': reasoner?.describe() ?? {'active_reasoner': null},
+        // Compatibility view for bridge_server.py / query.py / the MCP
+        // server, which read `llm.state/model/backend`: now describes THE
+        // selected reasoner, whichever runtime it is. Always present.
+        'llm': _reasonerCompat(),
         'capsule_prompt_version': promptVersion,
       };
+
+  Map<String, dynamic> _reasonerCompat() {
+    final slot = reasoner?.activeSlot;
+    if (slot == null) return {'state': 'unloaded', 'runtime': null};
+    return {
+      'state': slot.isReady ? 'ready' : 'unloaded',
+      'runtime': slot.kind.settingsName,
+      if (slot.isReady) 'model': slot.modelLabel,
+      if (slot.isReady) 'backend': slot.backendLabel,
+    };
+  }
 
   /// Releases the interpreter and the database — but only once the queue has
   /// drained.

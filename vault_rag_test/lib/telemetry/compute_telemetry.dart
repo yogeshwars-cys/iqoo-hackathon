@@ -31,17 +31,56 @@ import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
 
+import '../core/compute_ledger.dart';
 import 'device_info.dart';
 import 'telemetry_sources.dart';
 
-/// Counts time spent inside the model, so the telemetry service can turn it
-/// into a duty cycle. The embedding service feeds this.
-class InferenceMeter {
+/// One finished (or still running) operation, for overlap analysis.
+class LeaseInterval {
+  final ComputeHardware hardware;
+  final String source;
+  final String? evidence;
+  final DateTime start;
+  DateTime? end;
+
+  LeaseInterval(this.hardware, this.source, this.evidence, this.start);
+
+  Duration durationUntil(DateTime now) => (end ?? now).difference(start);
+
+  Map<String, dynamic> toJson() => {
+        'hardware': hardware.name,
+        'source': source,
+        if (evidence != null) 'evidence': evidence,
+        'start': start.toIso8601String(),
+        'end': end?.toIso8601String(),
+      };
+}
+
+/// Two things, kept separate on purpose:
+///
+///  * [record] — the legacy duty counter: microseconds reported by a runtime
+///    as time spent inside the model, across all hardware.
+///  * [begin] — per-hardware operation leases (see compute_ledger.dart).
+///    Hardware is active while its lease count is positive, so NPU embedding
+///    and GPU generation are tracked independently and can overlap.
+class InferenceMeter implements ComputeLedger {
+  final DateTime Function() _now;
+
+  /// Bounded history of lease intervals (oldest dropped first).
+  final int intervalCapacity;
+
+  InferenceMeter({DateTime Function()? now, this.intervalCapacity = 4096})
+      : _now = now ?? DateTime.now;
+
   int _cumulativeMicros = 0;
   int _cumulativeCount = 0;
-
   int _lastReadMicros = 0;
   int _lastReadCount = 0;
+
+  final Map<ComputeHardware, int> _activeCount = {
+    for (final h in ComputeHardware.values) h: 0,
+  };
+  final ListQueue<LeaseInterval> _intervals = ListQueue();
 
   int get totalMicros => _cumulativeMicros;
   int get totalCount => _cumulativeCount;
@@ -50,6 +89,87 @@ class InferenceMeter {
     _cumulativeMicros += micros;
     _cumulativeCount++;
   }
+
+  @override
+  ComputeLease begin(ComputeHardware hardware, String source, {String? evidence}) {
+    _activeCount[hardware] = _activeCount[hardware]! + 1;
+    final interval = LeaseInterval(hardware, source, evidence, _now());
+    if (_intervals.length >= intervalCapacity) _intervals.removeFirst();
+    _intervals.add(interval);
+    return _MeterLease(this, interval);
+  }
+
+  void _end(LeaseInterval interval) {
+    if (interval.end != null) return;
+    interval.end = _now();
+    _activeCount[interval.hardware] = _activeCount[interval.hardware]! - 1;
+  }
+
+  /// Hardware with at least one operation in progress.
+  Set<ComputeHardware> get activeHardware => {
+        for (final e in _activeCount.entries)
+          if (e.value > 0) e.key,
+      };
+
+  int activeCount(ComputeHardware h) => _activeCount[h]!;
+
+  Iterable<LeaseInterval> intervalsSince(DateTime since) =>
+      _intervals.where((i) => (i.end ?? _now()).isAfter(since));
+
+  /// Wall time in [from, to) during which [hardware] had >= 1 active lease.
+  Duration busyTime(ComputeHardware hardware, DateTime from, DateTime to) =>
+      _union(_clipped(hardware, from, to));
+
+  /// Wall time in [from, to) during which BOTH [a] and [b] were active — the
+  /// direct evidence that the two-model pipeline genuinely overlapped.
+  Duration overlapTime(
+      ComputeHardware a, ComputeHardware b, DateTime from, DateTime to) {
+    final ua = _merge(_clipped(a, from, to));
+    final ub = _merge(_clipped(b, from, to));
+    var total = Duration.zero;
+    var i = 0, j = 0;
+    while (i < ua.length && j < ub.length) {
+      final start = ua[i].$1.isAfter(ub[j].$1) ? ua[i].$1 : ub[j].$1;
+      final end = ua[i].$2.isBefore(ub[j].$2) ? ua[i].$2 : ub[j].$2;
+      if (end.isAfter(start)) total += end.difference(start);
+      if (ua[i].$2.isBefore(ub[j].$2)) {
+        i++;
+      } else {
+        j++;
+      }
+    }
+    return total;
+  }
+
+  List<(DateTime, DateTime)> _clipped(
+      ComputeHardware h, DateTime from, DateTime to) {
+    final now = _now();
+    return [
+      for (final iv in _intervals)
+        if (iv.hardware == h)
+          (
+            iv.start.isBefore(from) ? from : iv.start,
+            (iv.end ?? now).isAfter(to) ? to : (iv.end ?? now),
+          ),
+    ].where((r) => r.$2.isAfter(r.$1)).toList();
+  }
+
+  static List<(DateTime, DateTime)> _merge(List<(DateTime, DateTime)> ranges) {
+    ranges.sort((x, y) => x.$1.compareTo(y.$1));
+    final out = <(DateTime, DateTime)>[];
+    for (final r in ranges) {
+      if (out.isNotEmpty && !r.$1.isAfter(out.last.$2)) {
+        final last = out.removeLast();
+        out.add((last.$1, r.$2.isAfter(last.$2) ? r.$2 : last.$2));
+      } else {
+        out.add(r);
+      }
+    }
+    return out;
+  }
+
+  static Duration _union(List<(DateTime, DateTime)> ranges) => _merge(ranges)
+      .fold(Duration.zero, (sum, r) => sum + r.$2.difference(r.$1));
 
   void reset() {
     _cumulativeMicros = 0;
@@ -69,6 +189,19 @@ class InferenceMeter {
   }
 }
 
+class _MeterLease implements ComputeLease {
+  final InferenceMeter _meter;
+  final LeaseInterval _interval;
+  _MeterLease(this._meter, this._interval);
+
+  @override
+  ComputeHardware get hardware => _interval.hardware;
+  @override
+  String get source => _interval.source;
+  @override
+  void end() => _meter._end(_interval);
+}
+
 /// One row of the telemetry history.
 class TelemetrySample {
   final DateTime at;
@@ -82,6 +215,14 @@ class TelemetrySample {
   /// Embeddings completed during this window.
   final int inferences;
 
+  /// Percent of this window each hardware had at least one app operation
+  /// lease open (see compute_ledger.dart). Measured by the app from runtime
+  /// dispatch — independent per hardware, so GPU and NPU can both be high.
+  final Map<ComputeHardware, double> appBusyPercent;
+
+  /// Hardware with a lease open at the moment the sample was taken.
+  final Set<ComputeHardware> appActive;
+
   const TelemetrySample({
     required this.at,
     required this.cpu,
@@ -89,6 +230,8 @@ class TelemetrySample {
     required this.npu,
     required this.duty,
     required this.inferences,
+    this.appBusyPercent = const {},
+    this.appActive = const {},
   });
 
   Map<String, dynamic> toJson() => {
@@ -98,6 +241,11 @@ class TelemetrySample {
         'npu': npu.toJson(),
         'duty': duty.toJson(),
         'inferences': inferences,
+        'app_busy_percent': {
+          for (final e in appBusyPercent.entries)
+            e.key.name: double.parse(e.value.toStringAsFixed(1)),
+        },
+        'app_active': [for (final h in appActive) h.name],
       };
 }
 
@@ -364,6 +512,18 @@ class ComputeTelemetry extends ChangeNotifier {
     laneKinds[ComputeLane.gpu] = gpu.kind;
     laneKinds[ComputeLane.npu] = npu.kind;
 
+    final windowStart = since ?? now.subtract(interval);
+    final busy = <ComputeHardware, double>{
+      for (final h in ComputeHardware.values)
+        h: windowMicros <= 0
+            ? 0.0
+            : (meter.busyTime(h, windowStart, now).inMicroseconds /
+                    windowMicros *
+                    100)
+                .clamp(0, 100)
+                .toDouble(),
+    };
+
     _push(TelemetrySample(
       at: now,
       cpu: cpu,
@@ -375,6 +535,8 @@ class ComputeTelemetry extends ChangeNotifier {
         note: 'Interpreter time / wall time, measured by this app.',
       ),
       inferences: drained.count,
+      appBusyPercent: busy,
+      appActive: meter.activeHardware,
     ));
     _notify();
   }
@@ -434,6 +596,8 @@ class ComputeTelemetry extends ChangeNotifier {
       'npu_kind': s?.npu.kind.name,
       'npu_node': _npu.resolvedNode,
       'inference_duty_percent': s?.duty.value,
+      'app_active_now': [for (final h in meter.activeHardware) h.name],
+      'app_busy_percent': s?.toJson()['app_busy_percent'],
       'cpu_clock_mhz': readCpuClockMhz().value,
       'gpu_clock_mhz': _gpu.clockMhz().value,
       'rss_mb': readRssMb().value,

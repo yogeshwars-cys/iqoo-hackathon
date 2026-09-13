@@ -21,7 +21,7 @@ import '../core/gating.dart';
 import '../core/llm/capsule.dart';
 import '../core/security/ephemeral_clipboard.dart';
 import '../core/security/security_constants.dart';
-import '../core/llm/llm_runtime.dart';
+import '../core/llm/reasoner_coordinator.dart';
 import '../core/vault_engine.dart';
 import '../core/vector_store.dart';
 import 'theme.dart';
@@ -29,7 +29,8 @@ import 'widgets/common.dart';
 
 class VaultPage extends StatefulWidget {
   final VaultEngine engine;
-  final LlmRuntime llm;
+  /// The single selected reasoner; see reasoner_coordinator.dart.
+  final ReasonerCoordinator reasoner;
 
   /// Injectable for widget tests; a platform-backed one is created otherwise.
   final EphemeralClipboard? clipboard;
@@ -37,7 +38,7 @@ class VaultPage extends StatefulWidget {
   const VaultPage({
     super.key,
     required this.engine,
-    required this.llm,
+    required this.reasoner,
     this.clipboard,
   });
 
@@ -385,7 +386,9 @@ class _VaultPageState extends State<VaultPage> {
                   )
                 : const Icon(Icons.bolt_rounded, size: 19),
             label: Text(_busy
-                ? (widget.llm.isGenerating ? 'Reasoning…' : 'Retrieving…')
+                ? ((widget.reasoner.activeSlot?.isBusy ?? false)
+                    ? 'Reasoning…'
+                    : 'Retrieving…')
                 : 'Ask on device'),
           ),
           if (_searchError != null) ...[
@@ -408,9 +411,10 @@ class _VaultPageState extends State<VaultPage> {
   /// from this screen.
   Widget _generateToggle() {
     return ListenableBuilder(
-      listenable: widget.llm,
+      listenable: widget.reasoner,
       builder: (context, _) {
-        final ready = widget.llm.isReady;
+        final slot = widget.reasoner.activeSlot;
+        final ready = slot?.isReady ?? false;
         return InkWell(
           onTap: ready ? () => setState(() => _generate = !_generate) : null,
           borderRadius: BorderRadius.circular(VaultSpace.radiusSm),
@@ -441,7 +445,8 @@ class _VaultPageState extends State<VaultPage> {
                       const SizedBox(height: 2),
                       Text(
                         ready
-                            ? '${widget.llm.modelLabel} writes the capsule. '
+                            ? '${slot!.modelLabel} (${slot.kind.label}) '
+                                'writes the capsule. '
                                 'Adds a few seconds.'
                             : 'No model loaded — load one on the Model tab. '
                                 'Queries still return a capsule built from '
@@ -624,10 +629,8 @@ class _VaultPageState extends State<VaultPage> {
       children: [
         StatusPill(
           label: switch (capsule.gatingPath) {
-            GatingPath.extractiveEarlyExit => 'TIER 1 · EARLY EXIT',
-            GatingPath.llmSynthesized => 'TIER 2 · LLM',
-            GatingPath.extractiveFallback => 'TIER 2 · EXTRACTIVE',
-            GatingPath.belowRelevanceThreshold => 'TIER 3 · NO MATCH',
+            GatingPath.llmSynthesized => 'LLM ANSWER',
+            GatingPath.extractiveFallback => 'RETRIEVAL ONLY',
           },
           color: VaultColors.info,
         ),
@@ -703,15 +706,7 @@ class _VaultPageState extends State<VaultPage> {
         const SizedBox(height: VaultSpace.lg),
         _label('RETRIEVED CONTEXT'),
         const SizedBox(height: VaultSpace.sm),
-        if (capsule.context.isEmpty &&
-            capsule.gatingPath == GatingPath.belowRelevanceThreshold)
-          const EmptyState(
-            icon: Icons.search_off_rounded,
-            title: 'Below the relevance threshold',
-            message: 'No chunk scored high enough to quote. Low-scoring text '
-                'is left out of the capsule on purpose.',
-          )
-        else if (capsule.context.isEmpty)
+        if (capsule.context.isEmpty)
           const EmptyState(
             icon: Icons.inbox_outlined,
             title: 'Nothing indexed yet',
