@@ -1,13 +1,17 @@
 """
-Vault (PocketRAG) — pitch deck generator.
+Vault (PocketRAG) - deck generator.
 
-Describes the system as it will actually be built and deployed, not the
-plumbing prototype in ../vault_rag_test. The prototype appears once, on the
-evidence slide, as the measured floor under the claims.
+Describes the system that exists in this repository, as built and measured:
+the Flutter vault app (vault_rag_test/), the desktop tooling (bridge/), the
+model-prep pipeline (modelprep/) and the explainer (vault_video/).
 
-Editorial grid borrowed from the Ground Zero Mesh deck (eyebrow -> headline ->
-standfirst -> content -> hairline + folio). Palette from vault_video/theme.ts:
-green means on-device, red means it left the device, nothing else saturates.
+Every number on a slide carries a status chip saying where it came from:
+MEASURED ON DEVICE (iQOO 15 runs), VERIFIED (host tests / tooling), BUILT -
+NOT HARDENED, TARGET / DESIGNED (not built), OPEN GAP. Nothing is upgraded.
+
+Editorial grid: eyebrow -> headline -> standfirst -> content -> hairline +
+folio. Palette: green = on-device / verified, red = left the device or
+failed, amber = built but unproven, violet = roadmap.
 
     python build_deck.py
 """
@@ -397,742 +401,1072 @@ def meter(sl, x, y, w, frac, color=ACCENT, h=0.10, track=None):
         rrect(sl, x, y, max(w * frac, h), h, fill=color, radius=h / 2)
 
 
+# ============================================================ diagram kit ===
+
+import math
+
+
+def node(sl, x, y, w, h, title, meta=None, color=None, fill=PANEL,
+         tsize=8.6, msize=7.2, center=False, bar=True):
+    """Rounded box: optional coloured top bar, bold title, wrapped meta."""
+    edge = mix(BG, color, 0.45) if color else RULE_SOFT
+    rrect(sl, x, y, w, h, fill=fill, line=edge, lw=0.8, radius=0.05)
+    if color and bar:
+        rect(sl, x, y, w, 0.03, fill=mix(BG, color, 0.62))
+    al = PP_ALIGN.CENTER if center else PP_ALIGN.LEFT
+    txt(sl, x + 0.11, y + 0.09, w - 0.22, 0.20, title, tsize, INK, True, align=al)
+    if meta:
+        txt(sl, x + 0.11, y + 0.30, w - 0.22, h - 0.34, meta, msize, BODY,
+            lh=1.17, align=al)
+
+
+def arr(sl, x1, y1, x2, y2, color=ACCENT, lw=1.1, label=None, lcolor=None,
+        dash=None, lw_box=1.9, loff=-0.21, lsize=7):
+    """Straight arrow with a head at (x2, y2) and an optional mid label."""
+    line(sl, x1, y1, x2, y2, color, lw, dash)
+    ang = math.atan2(y2 - y1, x2 - x1)
+    L, W = 0.085, 0.055
+    bx, by = x2 - L * math.cos(ang), y2 - L * math.sin(ang)
+    p1 = (bx + W * math.sin(ang), by - W * math.cos(ang))
+    p2 = (bx - W * math.sin(ang), by + W * math.cos(ang))
+    freeform(sl, [p1, (x2, y2), p2], color, lw)
+    if label:
+        mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+        txt(sl, mx - lw_box / 2, my + loff, lw_box, 0.19, label, lsize,
+            lcolor or color, True, align=PP_ALIGN.CENTER, spc=0.4)
+
+
+def lifeline(sl, x, y, h, title, sub, color=None, w=2.0):
+    """Sequence-diagram actor header plus dashed lifeline."""
+    node(sl, x - w / 2, y, w, 0.52, title, sub, color, tsize=8.2, msize=6.8,
+         center=True)
+    line(sl, x, y + 0.52, x, y + h, mix(BG, INK, 0.22), 0.8,
+         MSO_LINE_DASH_STYLE.DASH)
+
+
+def paras(sl, x, y, w, h, rows, size=8, color=BODY, font=TEXT, lh=1.15):
+    """Several paragraphs; row = str or (text, color, bold)."""
+    tb = sl.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
+    tf = tb.text_frame
+    tf.word_wrap = True
+    tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = 0
+    for i, row in enumerate(rows):
+        text, c, b = (row, color, False) if isinstance(row, str) else row
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        p.line_spacing = lh
+        r = p.add_run()
+        r.text = text
+        r.font.name = font
+        r.font.size = Pt(size)
+        r.font.bold = b
+        r.font.color.rgb = RGBColor.from_string(c)
+    return tb
+
+
+def code(sl, x, y, w, h, rows, size=7.4, title=None):
+    rrect(sl, x, y, w, h, fill=VOID, line=RULE_SOFT, lw=0.7, radius=0.04)
+    top = y + 0.12
+    if title:
+        txt(sl, x + 0.14, y + 0.10, w - 0.28, 0.18, title, 6.8, MUTED, True,
+            spc=1.1, caps=True)
+        top = y + 0.34
+    paras(sl, x + 0.14, top, w - 0.28, h - (top - y) - 0.08, rows, size,
+          BODY, MONO, lh=1.12)
+
+
+def status_line(sl, kind, text, y=6.56):
+    chip(sl, M, y, kind)
+    txt(sl, M + chip_w(kind) + 0.16, y + 0.02, CW - chip_w(kind) - 0.2, 0.20,
+        text, 7.8, DIM)
+
+
+def pill(sl, x, y, text, color, w=None):
+    w = w or (0.058 * len(text) + 0.30)
+    rrect(sl, x, y, w, 0.24, fill=mix(BG, color, 0.16),
+          line=mix(BG, color, 0.5), lw=0.6, radius=0.05)
+    txt(sl, x, y + 0.045, w, 0.18, text, 7, color, True, align=PP_ALIGN.CENTER,
+        spc=0.5)
+    return w
+
+
 # =========================================================== slide builders ==
 
-def slide_hero(prs):
+def s_hero(prs):
     sl = new_slide(prs)
-    rect(sl, 0, 0, 13.333, 7.5, fill=VOID)
-    starfield(sl, 6.6, 0.4, 6.5, 6.7, n=110, seed=23)
-    scrim(sl, 0, 0, 13.333, 7.5, [(0, 0.98), (0.55, 0.86), (1, 0.55)], angle=0,
-          base=VOID)
-
-    for i in range(6):
-        rect(sl, 2.222 * i, 0, 2.222, 0.115, fill=mix(ACCENT, VOID, i / 5 * 0.86))
-
-    txt(sl, M, 0.60, 9.0, 0.24,
-        "POCKETRAG  /  ON-DEVICE RETRIEVAL VAULT  /  ANDROID + DESKTOP",
-        8.5, MUTED, True, spc=1.6)
-    txt(sl, M, 0.98, 9.0, 0.95, "VAULT", 58, INK, False, DISPLAY, lh=0.96)
-    txt(sl, M, 1.92, 7.4, 0.34,
-        "Your documents never leave your phone. Only the evidence for the "
-        "answer does.", 13, ACCENT, lh=1.15)
-
-    rrect(sl, M, 2.44, 6.30, 1.52, fill=PANEL, line=RULE_SOFT, lw=0.7,
-          alpha=0.88)
-    txt(sl, M + 0.26, 2.62, 5.80, 0.20, "THE PROBLEM", 7.5, MUTED, True, spc=1.3)
-    txt(sl, M + 0.26, 2.86, 5.80, 1.00,
-        "To use AI on your own documents you are asked to upload them - "
-        "contracts, medical records, source code, unpublished research. "
-        "Encryption in transit does not help: the server must read the "
-        "plaintext to embed it.", 9.8, INK, lh=1.30)
-
-    rrect(sl, M, 4.10, 6.30, 1.40, fill=PANEL,
-          line=mix(BG, ACCENT, 0.32), lw=0.8, alpha=0.90)
-    txt(sl, M + 0.26, 4.28, 5.80, 0.20, "THE MOVE", 7.5, ACCENT, True, spc=1.3)
-    txt(sl, M + 0.26, 4.52, 5.80, 0.90,
-        "Invert the topology. The phone becomes the trusted core holding the "
-        "corpus, the index and the encoder. The workstation becomes the edge, "
-        "and only ever sees retrieved passages.", 9.8, INK, lh=1.30)
-
-    stats = [("1 GB", "CORPUS THAT STAYS PUT", INK),
-             ("~800", "TOKENS THAT MOVE", ACCENT),
-             ("0", "NETWORK PERMISSIONS", ACCENT),
-             ("0", "PER-TOKEN COST", INK)]
-    for i, (v, l, c) in enumerate(stats):
-        stat(sl, M + i * 1.62, 5.72, 1.55, v, l, c, 25, 7)
-
-    # --- the ratio, drawn: what stays against what moves --------------------
-    RX, RW = 7.40, 5.28
-    section_label(sl, RX, 2.62, "WHAT STAYS ON THE PHONE", RW, ACCENT)
-    rrect(sl, RX, 2.92, RW, 1.34, fill=mix(VOID, ACCENT, 0.10),
-          line=mix(VOID, ACCENT, 0.38), lw=0.9)
-    txt(sl, RX + 0.30, 3.14, 3.0, 0.52, "1,000 MB", 30, INK, False, DISPLAY)
-    txt(sl, RX + 0.30, 3.74, RW - 0.60, 0.36,
-        "the corpus, the index, every embedding, and the encoder itself",
-        8.6, BODY, lh=1.24)
-
-    section_label(sl, RX, 4.56, "WHAT CROSSES THE BRIDGE", RW, MUTED)
-    rrect(sl, RX, 4.86, 0.34, 0.42, fill=mix(VOID, ACCENT, 0.22),
-          line=mix(VOID, ACCENT, 0.46), lw=0.9, radius=0.04)
-    txt(sl, RX + 0.52, 4.88, 4.70, 0.24, "approx. 4 KB", 14, ACCENT, False,
-        DISPLAY)
-    txt(sl, RX + 0.52, 5.14, 4.70, 0.22,
-        "your question, and the passages that answer it", 8.6, BODY)
-
-    hair(sl, RX, 5.56, RW, RULE_SOFT)
-    txt(sl, RX, 5.72, RW, 0.46,
-        "One part in 250,000 of what the vault holds ever becomes visible to "
-        "anything else. Blocks not to scale - the real sliver would be "
-        "invisible.", 8.4, MUTED, lh=1.26)
-
+    starfield(sl, 6.9, 0.3, 6.2, 6.9, n=110)
+    scrim(sl, 5.6, 0, 7.8, 7.5, [(0, 1.0), (0.45, 0.55), (1, 0.0)], angle=0)
+    txt(sl, M, 0.60, 6, 0.24, "iQOO hackathon 2026 · vault / pocketrag", 9,
+        MUTED, True, spc=1.6, caps=True)
+    txt(sl, M, 1.45, 7.6, 1.4, "Your documents stay on the phone.\n"
+        "Your laptop gets a signed answer.", 30, INK, False, DISPLAY, lh=1.05)
+    txt(sl, M, 3.05, 6.9, 1.4,
+        "Vault is an on-device RAG system for the iQOO 15. The phone holds the "
+        "corpus, the encrypted index, the encoder and the reasoner. A laptop "
+        "asks over an encrypted clipboard link and receives a context capsule "
+        "that is signed by a key living in StrongBox.", 13, BODY, lh=1.32)
+    rows = [("NPU", "MiniLM embeddings via Qualcomm QNN HTP", ACCENT),
+            ("GPU", "one reasoner: llama.cpp OpenCL or MediaPipe", ACCENT),
+            ("TEE", "AES-256-GCM at rest · ECDSA-P256 capsules", ACCENT),
+            ("LINK", "VAULTLINK/2 over Office Kit clipboard", ACCENT)]
+    for i, (k, v, c) in enumerate(rows):
+        yy = 5.02 + i * 0.36
+        pill(sl, M, yy, k, c, 0.62)
+        txt(sl, M + 0.78, yy + 0.035, 5.6, 0.22, v, 10, INK)
+    node(sl, 8.2, 1.95, 4.45, 3.55, "What is in this repository", None, ACCENT,
+         tsize=10)
+    paras(sl, 8.34, 2.40, 4.2, 3.0, [
+        ("vault_rag_test/", INK, True), "Flutter + Kotlin + C++ phone app",
+        ("bridge/", INK, True), "desktop VaultLink client, verifier, LAN "
+        "bridge server, MCP tools, eval corpus",
+        ("modelprep/", INK, True), "MiniLM ONNX → TFLite export + verification",
+        ("vault_video/ · deck/", INK, True), "Remotion explainer · this deck",
+        ("SECURITY.md · NPU_QNN.md", INK, True), "threat model · NPU bring-up",
+    ], 9.6, BODY, lh=1.22)
     hair(sl, M, FOOT_Y, CW, RULE_SOFT)
-    txt(sl, M, PAGE_Y, 10.5, 0.22,
-        "TEAM jSONs  ·  iQOO HACKATHON 2026  ·  TARGET ARCHITECTURE, NOT THE "
-        "BENCH PROTOTYPE", 8, DIM, spc=0.6)
+    txt(sl, M, PAGE_Y, 9, 0.22, "branch vault/coprocessor-gemma-capsule",
+        8, DIM)
     return sl
 
 
-def slide_problem(prs):
+def s_problem(prs):
     sl = new_slide(prs)
     chrome(sl, "01 · the problem",
-           "Two problems with the same shape.",
-           "The data is in the wrong place, and the work is on the wrong "
-           "processor. Every current answer fixes one by making the other "
-           "worse.", "01")
-
-    rrect(sl, M, 2.34, 5.85, 3.74, fill=PANEL, line=mix(BG, DANGER, 0.26),
-          lw=0.8)
-    txt(sl, M + 0.28, 2.54, 5.30, 0.22, "PROBLEM ONE - THE DATA LEAVES", 8,
-        DANGER, True, spc=1.2)
-    txt(sl, M + 0.28, 2.82, 5.30, 0.46,
-        "The moment a document leaves your machine, you lose control of the "
-        "copy.", 11, INK, lh=1.24)
-
-    fates = [("RETAINED", "held on infrastructure you do not operate"),
-             ("INDEXED", "searchable by systems you cannot audit"),
-             ("SUBPOENAED", "discoverable through a third party"),
-             ("TRAINED ON", "absorbed into weights, unremovable")]
-    for i, (a, b) in enumerate(fates):
-        yy = 3.44 + i * 0.42
-        rect(sl, M + 0.28, yy, 0.038, 0.30, fill=DANGER)
-        txt(sl, M + 0.46, yy + 0.025, 1.62, 0.22, a, 8.6, INK, True, spc=0.5)
-        txt(sl, M + 2.10, yy + 0.035, 3.50, 0.22, b, 8.2, BODY)
-
-    txt(sl, M + 0.28, 5.34, 5.30, 0.42,
-        "Transport encryption is not a fix. The embedding server has to see "
-        "the plaintext to turn it into a vector.", 8.4, MUTED, lh=1.24,
-        italic=True)
-
-    rrect(sl, 6.98, 2.34, 5.70, 3.74, fill=PANEL, line=RULE, lw=0.8)
-    txt(sl, 7.26, 2.54, 5.10, 0.22, "PROBLEM TWO - THE WRONG PROCESSOR", 8,
-        AMBER, True, spc=1.2)
-    txt(sl, 7.26, 2.82, 5.10, 0.46,
-        "So you run it locally - and a transformer starts competing with your "
-        "compiler for the same cores.", 11, INK, lh=1.24)
-
-    section_label(sl, 7.26, 3.50, "UTILISATION WHILE YOU WORK", 5.0)
-    bars = [("Laptop CPU / GPU", 0.94, DANGER, "saturated - fans, throttling"),
-            ("Phone NPU", 0.04, ACCENT, "tens of TOPS, sitting near idle")]
-    for i, (name, frac, col, note) in enumerate(bars):
-        yy = 3.82 + i * 0.86
-        txt(sl, 7.26, yy, 3.2, 0.20, name, 9, INK, True)
-        txt(sl, 10.60, yy, 1.76, 0.20, f"{int(frac * 100)}%", 9, col, True,
-            align=PP_ALIGN.RIGHT)
-        meter(sl, 7.26, yy + 0.26, 5.10, frac, col)
-        txt(sl, 7.26, yy + 0.44, 5.10, 0.20, note, 7.8, MUTED)
-
-    txt(sl, 7.26, 5.44, 5.10, 0.62,
-        "Every flagship phone ships a neural accelerator rated in tens of "
-        "trillions of operations per second. It sits near zero utilisation in "
-        "your pocket all day.", 8.6, BODY, lh=1.26)
-
-    txt(sl, M, 6.34, CW, 0.24,
-        "THE MOST CAPABLE IDLE PROCESSOR YOU OWN IS ALREADY HOLDING YOUR DATA",
-        8.5, ACCENT, True, spc=1.1)
-    return sl
-
-
-def slide_existing(prs):
-    sl = new_slide(prs)
-    chrome(sl, "02 · why the existing answers fail",
-           "Four ways people solve this today. None of them close.",
-           "Each option trades away either privacy, capability, or the "
-           "hardware you already own.", "02")
-
+           "Private documents, public models, and nothing in between.",
+           "Cloud RAG uploads the corpus to answer one question. Keeping it "
+           "local on a laptop puts the most sensitive data on the least "
+           "controlled machine.", "01")
     cards = [
-        ("CLOUD RAG", DANGER, "ChatGPT · Claude Projects · NotebookLM",
-         "Upload the corpus. Fast, capable, and the plaintext is on someone "
-         "else's disk before the first vector exists.",
-         "Privacy is a promise in a policy document."),
-        ("LAPTOP-LOCAL LLM", AMBER, "Ollama · LM Studio · llama.cpp",
-         "Nothing leaves, but the machine you are working on is the machine "
-         "doing the inference. Thermals and battery both lose.",
-         "Right threat model, wrong processor."),
-        ("ENTERPRISE ON-PREM", MUTED, "Private VPC · self-hosted vector DB",
-         "Works, at the cost of a cluster, a security review and a budget. "
-         "Nothing an individual can deploy.",
-         "Right answer for a company, not a person."),
-        ("BROWSER / WASM RAG", MUTED, "WebLLM · transformers.js",
-         "Data stays in the tab, but so does the ceiling - small models, cold "
-         "caches, and no access to the NPU.",
-         "Private, but not capable enough to use."),
+        ("Cloud RAG", "The whole corpus and its embeddings leave the device "
+         "to answer a single question. Compliance ends at upload.", DANGER),
+        ("Laptop-local RAG", "The index sits on the machine that runs "
+         "browsers, plugins and IDE agents with broad file access.", AMBER),
+        ("Phones are idle compute", "A flagship SoC carries an NPU, a GPU and "
+         "a hardware keystore, yet sits unused next to the laptop.", ACCENT),
     ]
-    cw = 2.86
-    for i, (title, col, sub, body, verdict) in enumerate(cards):
-        x = M + i * (cw + 0.19)
-        rrect(sl, x, 2.36, cw, 3.20, fill=PANEL, line=RULE_SOFT, lw=0.7)
-        rect(sl, x, 2.36, cw, 0.036, fill=col)
-        txt(sl, x + 0.22, 2.58, cw - 0.44, 0.22, title, 9.5, INK, True, spc=0.6)
-        txt(sl, x + 0.22, 2.84, cw - 0.44, 0.34, sub, 7.4, col, True, lh=1.2)
-        hair(sl, x + 0.22, 3.26, cw - 0.44, RULE_SOFT)
-        txt(sl, x + 0.22, 3.42, cw - 0.44, 1.20, body, 8.8, BODY, lh=1.30)
-        hair(sl, x + 0.22, 4.62, cw - 0.44, RULE_SOFT)
-        txt(sl, x + 0.22, 4.78, cw - 0.44, 0.62, verdict, 8.4, INK, lh=1.26,
-            italic=True)
-
-    rrect(sl, M, 5.86, CW, 0.60, fill=mix(BG, ACCENT, 0.09),
-          line=mix(BG, ACCENT, 0.30), lw=0.7)
-    rich(sl, M + 0.26, 6.02, CW - 0.52, 0.30,
-         [("The gap: ", {"bold": True, "color": ACCENT, "size": 9.5}),
-          ("nobody treats the phone as the trusted core. It is always the thin "
-           "client asking a bigger machine for help - even though it holds the "
-           "documents, the camera that captured them, and an idle NPU.",
-           {"size": 9.5, "color": INK})])
+    for i, (t, b, c) in enumerate(cards):
+        x = M + i * 4.08
+        node(sl, x, 2.45, 3.86, 1.7, t, b, c, tsize=11, msize=9.2)
+    section_label(sl, M, 4.52, "What Vault needs to prove")
+    bullet_rows(sl, M, 4.84, 5.8, [
+        ("The corpus never leaves the phone",
+         "Documents, chunks and the index stay on device; only the answer "
+         "for one question crosses."),
+        ("The answer is attributable",
+         "A consumer can verify which device produced it and that nobody "
+         "edited the quoted evidence on the way."),
+    ], gap=0.78)
+    bullet_rows(sl, 6.95, 4.84, 5.7, [
+        ("The phone does real work",
+         "Embeddings on the NPU and generation on the GPU, attributed from "
+         "what the runtimes report, not from the SoC name."),
+        ("No new attack surface",
+         "An air-gapped build with zero network permissions; the link runs "
+         "over an authenticated, encrypted clipboard protocol."),
+    ], gap=0.78)
     return sl
 
 
-def slide_inversion(prs):
+def s_overall(prs):
     sl = new_slide(prs)
-    chrome(sl, "03 · the solution",
-           "Invert the topology.",
-           "Stop treating the phone as a thin client for the cloud. Treat it "
-           "as a private inference appliance that happens to fit in your "
-           "pocket.", "03")
-
-    section_label(sl, M, 2.36, "CONVENTIONAL - THE CORPUS TRAVELS", 5.6, DANGER)
-    rrect(sl, M, 2.66, 5.85, 1.86, fill=PANEL, line=mix(BG, DANGER, 0.24),
-          lw=0.8)
-    rrect(sl, M + 0.30, 2.94, 1.42, 0.74, fill=PANEL2, line=RULE_SOFT, lw=0.6)
-    txt(sl, M + 0.30, 3.18, 1.42, 0.22, "YOUR DEVICE", 7.6, INK, True,
-        align=PP_ALIGN.CENTER, spc=0.6)
-    rrect(sl, M + 4.06, 2.94, 1.42, 0.74, fill=mix(BG, DANGER, 0.12),
-          line=mix(BG, DANGER, 0.36), lw=0.7)
-    txt(sl, M + 4.06, 3.18, 1.42, 0.22, "THE SERVER", 7.6, DANGER, True,
-        align=PP_ALIGN.CENTER, spc=0.6)
-    arrow(sl, M + 1.82, 3.31, M + 3.96, "ENTIRE CORPUS", "gigabytes, plaintext",
-          DANGER, above=True)
-    txt(sl, M + 0.30, 3.86, 5.25, 0.48,
-        "Everything you own is copied to infrastructure you do not control, "
-        "and has to be readable once it arrives.", 8.8, BODY, lh=1.26)
-
-    section_label(sl, 6.98, 2.36, "VAULT - ONLY THE QUESTION TRAVELS", 5.7,
-                  ACCENT)
-    rrect(sl, 6.98, 2.66, 5.70, 1.86, fill=PANEL, line=mix(BG, ACCENT, 0.30),
-          lw=0.8)
-    rrect(sl, 7.26, 2.94, 1.42, 0.74, fill=mix(BG, ACCENT, 0.12),
-          line=mix(BG, ACCENT, 0.40), lw=0.7)
-    txt(sl, 7.26, 3.10, 1.42, 0.20, "PHONE", 7.6, ACCENT, True,
-        align=PP_ALIGN.CENTER, spc=0.6)
-    txt(sl, 7.26, 3.30, 1.42, 0.18, "trusted core", 6.6, MUTED,
-        align=PP_ALIGN.CENTER)
-    rrect(sl, 10.94, 2.94, 1.42, 0.74, fill=PANEL2, line=RULE_SOFT, lw=0.6)
-    txt(sl, 10.94, 3.10, 1.42, 0.20, "LAPTOP", 7.6, INK, True,
-        align=PP_ALIGN.CENTER, spc=0.6)
-    txt(sl, 10.94, 3.30, 1.42, 0.18, "the edge", 6.6, MUTED,
-        align=PP_ALIGN.CENTER)
-    arrow(sl, 10.86, 3.14, 8.78, "QUESTION", "~40 tokens", BODY, above=True)
-    arrow(sl, 8.78, 3.52, 10.86, "TOP PASSAGES", "~800 tokens", ACCENT,
-          above=False)
-    txt(sl, 7.26, 4.06, 5.14, 0.36,
-        "A gigabyte of private material stays put. A few hundred tokens of "
-        "relevant context is all that moves.", 8.8, BODY, lh=1.26)
-
-    hair(sl, M, 4.82, CW, RULE_SOFT)
-    section_label(sl, M, 5.00, "WHAT THAT SEPARATION BUYS", 6.0)
-    cols = [
-        ("Retrieval is private",
-         "The corpus, the index and the encoder never exist anywhere but the "
-         "phone. Search happens entirely inside the vault."),
-        ("Generation is yours to choose",
-         "The passages can go to a local model, a self-hosted one, or a "
-         "frontier API. That is a policy setting, not an architecture "
-         "change."),
-        ("It crosses a wire, not the internet",
-         "The bridge is a direct device-to-device link, so there is nothing "
-         "in the middle that has to be trusted."),
-    ]
-    cwid = 3.90
-    for i, (h, b) in enumerate(cols):
-        x = M + i * (cwid + 0.17)
-        rect(sl, x, 5.32, 0.036, 1.06, fill=ACCENT if i == 0 else RULE)
-        txt(sl, x + 0.18, 5.32, cwid - 0.24, 0.24, h, 9.6, INK, True)
-        txt(sl, x + 0.18, 5.60, cwid - 0.24, 0.80, b, 8.6, BODY, lh=1.28)
-    return sl
-
-
-def slide_architecture(prs):
-    sl = new_slide(prs)
-    chrome(sl, "04 · architecture",
-           "The vault, the bridge, and the edge.",
-           "Three components, one trust boundary. Everything to the left of "
-           "the dashed line is under the user's physical control.", "04")
-
-    device(sl, M, 2.30, 3.05, 4.10, "YOUR PHONE", "THE VAULT · TRUSTED CORE",
-           ACCENT, notch=True, rows=[
-               ("Corpus", "documents, code, captured images"),
-               ("Chunker", "256-token windows, 32 overlap"),
-               ("Encoder", "MiniLM-L6 · 384-d · NPU delegate"),
-               ("Index", "SQLite + sqlite-vec, ANN search"),
-               ("Keystore", "SQLCipher key, hardware-backed")],
-           footer="Nothing in this column has a network path.")
-
-    boundary(sl, 4.16, 2.30, 4.10)
-
-    rrect(sl, 4.52, 2.66, 3.90, 2.14, fill=PANEL, line=RULE, lw=0.8)
-    txt(sl, 4.52, 2.84, 3.90, 0.20, "THE BRIDGE", 8.5, INK, True,
+    chrome(sl, "02 · overall", "The whole system in one picture.",
+           "The laptop never holds the corpus. It sends a sealed question and "
+           "gets back a sealed, signed capsule.", "02")
+    # laptop
+    device(sl, M, 2.28, 3.1, 4.05, "LAPTOP", "UNTRUSTED EDGE", None, rows=[
+        ("vaultlink.py", "pair · enroll · ask · verify"),
+        ("capsule_verify.py", "digest · ECDSA · pinned key"),
+        ("DPAPI pairing key", "Windows user scope"),
+        ("Clipboard scrub", "20 s countdown, compare-and-clear"),
+        ("IDE / MCP client", "optional, via LAN bridge (lan flavor)")])
+    # link column
+    boundary(sl, 4.05, 2.28, 4.05)
+    node(sl, 4.35, 2.55, 3.0, 1.05, "Office Kit clipboard mirror",
+         "Carries opaque VAULTLINK/2 frames both ways. It sees ciphertext "
+         "only.", AMBER, msize=7.4)
+    arr(sl, 4.42, 3.95, 7.28, 3.95, BODY, 1.1, "SEALED REQUEST", BODY)
+    arr(sl, 7.28, 4.50, 4.42, 4.50, ACCENT, 1.1, "SEALED + SIGNED CAPSULE",
+        ACCENT, loff=0.08)
+    node(sl, 4.35, 4.95, 3.0, 0.78, "LAN bridge (lan flavor only)",
+         "bridge_server.py WebSocket · off in the air-gapped APK", ROADMAP,
+         msize=7.2)
+    barrier(sl, 4.35, 5.88, 3.0, 0.42, "no internet path in airgap build")
+    boundary(sl, 7.62, 2.28, 4.05, "")
+    # phone
+    x0 = 7.95
+    rrect(sl, x0, 2.28, 4.73, 4.05, fill=PANEL, line=mix(BG, ACCENT, 0.44),
+          lw=1.0, radius=0.12)
+    txt(sl, x0, 2.40, 4.73, 0.2, "iQOO 15 · VAULT APP", 8.5, INK, True,
         align=PP_ALIGN.CENTER, spc=1.1)
-    txt(sl, 4.52, 3.04, 3.90, 0.18, "DIRECT DEVICE-TO-DEVICE", 7, MUTED, True,
+    txt(sl, x0, 2.60, 4.73, 0.18, "TRUSTED CORE · SM8850", 7, ACCENT, True,
         align=PP_ALIGN.CENTER, spc=1.2)
-    arrow(sl, 7.90, 3.78, 5.04, "QUESTION IN", "~40 tokens", BODY, above=True)
-    arrow(sl, 5.04, 4.18, 7.90, "PASSAGES OUT", "~800 tokens · cited", ACCENT,
-          above=False)
-    txt(sl, 4.72, 4.92, 3.50, 0.40,
-        "Office Kit transport at the venue; USB or a local socket as the "
-        "fallback. Never an internet hop.", 8, MUTED, lh=1.24,
-        align=PP_ALIGN.CENTER)
-
-    boundary(sl, 8.62, 2.30, 4.10, "")
-
-    device(sl, 9.00, 2.30, 3.68, 4.10, "YOUR LAPTOP", "THE EDGE · UNTRUSTED",
-           None, rows=[
-               ("Editor extension", "VS Code or browser side panel"),
-               ("Prompt assembler", "passages + question, nothing else"),
-               ("Model of your choice", "local, self-hosted, or API"),
-               ("Answer + citations", "every claim points back to a chunk"),
-               ("Nothing else", "no corpus, no index, no embeddings")],
-           footer="Compromising it exposes only what you asked for.")
-
-    barrier(sl, 4.52, 5.48, 3.90, 0.50, "NO PATH TO ANY SERVER")
-    txt(sl, 4.52, 6.08, 3.90, 0.40,
-        "The app requests no network permission, so this arrow cannot be "
-        "drawn even by a compromised build.", 7.8, MUTED, lh=1.26,
-        align=PP_ALIGN.CENTER)
-
-    chip(sl, M, 6.56, "target")
-    txt(sl, M + chip_w("target") + 0.16, 6.58, 7.6, 0.20,
-        "sqlite-vec, SQLCipher, the NPU delegate and Office Kit are the target "
-        "build - slide 09 states what is measured today.", 7.8, DIM)
+    cells = [
+        ("VaultLink service", "open frame · replay check", CPU := "7C8CF8"),
+        ("MiniLM encoder", "QNN HTP → XNNPACK → CPU", ACCENT),
+        ("Vector index", "Float32 RAM matrix · top-K", BODY),
+        ("Encrypted store", "SQLite · AES-GCM chunks", ACCENT),
+        ("Reasoner (one)", "llama.cpp GPU · MediaPipe", AMBER),
+        ("Capsule signer", "ECDSA-P256 · StrongBox", ACCENT),
+    ]
+    for i, (t, m, c) in enumerate(cells):
+        cx = x0 + 0.18 + (i % 2) * 2.2
+        cy = 2.95 + (i // 2) * 1.08
+        node(sl, cx, cy, 2.12, 0.92, t, m, c, tsize=9, msize=8.2)
+    status_line(sl, "measured", "Verified on the iQOO 15: sealed/signed capsules "
+                "returned over the clipboard, StrongBox keys, llama.cpp on GPU. "
+                "QNN NPU path: re-exported model pending on-device check.")
     return sl
 
 
-def slide_pipeline(prs):
+def s_repo(prs):
     sl = new_slide(prs)
-    chrome(sl, "05 · the pipeline",
-           "From a document to a cited answer.",
-           "Six stages. The first five never leave the phone; only the sixth "
-           "crosses the boundary.", "05")
-
-    stage_chain(sl, M, 2.42, CW, [
-        ("Ingest", "Text, code and camera captures are normalised to plain "
-                   "text on-device. OCR runs locally.", "on phone"),
-        ("Chunk", "256-token windows with 32 tokens of overlap, so an idea "
-                  "spanning a boundary is never cut in half.", "on phone"),
-        ("Encode", "MiniLM-L6-v2, 384 dimensions, quantised and compiled for "
-                   "the phone's neural engine.", "on phone · npu"),
-        ("Store", "Vectors land in SQLite with a vector index, encrypted at "
-                  "rest under a hardware-held key.", "on phone · encrypted"),
-        ("Retrieve", "The same encoder embeds the question; cosine similarity "
-                     "ranks the index and the top passages are serialised.",
-         "on phone"),
-        ("Generate", "The bridge hands those passages to an editor extension, "
-                     "which prompts whichever model you trust.",
-         "your choice"),
-    ], box_h=1.30)
-
-    hair(sl, M, 4.42, CW, RULE_SOFT)
-
-    section_label(sl, M, 4.62, "WHY EACH CHOICE IS THE ONE IT IS", 6.0)
-    left = [
-        ("256 tokens with 32 overlap",
-         "Matches MiniLM's context without truncation, and the overlap keeps "
-         "a definition that straddles two windows retrievable from either."),
-        ("MiniLM-L6-v2 at 384 dimensions",
-         "Small enough to quantise onto a phone NPU, strong enough for passage "
-         "retrieval. A 1 GB corpus indexes to roughly 200 MB."),
+    chrome(sl, "03 · the repository", "Five parts, one protocol.",
+           "Everything below ships from one branch and is exercised by 236 "
+           "Flutter tests and 66 Python tests.", "03")
+    cols = [
+        ("vault_rag_test/", "Phone app", ACCENT, [
+            "lib/core — engine, chunker, tokenizer, vector store, gating path",
+            "lib/core/security — keystore, signing, clipboard TTL",
+            "lib/core/llm — capsule, prompts, llama/MediaPipe, coordinator",
+            "lib/core/qnn — HTP delegate, acceptance gates",
+            "lib/link — VaultLink v1/v2 service",
+            "lib/telemetry — probes, leases, 3 benchmark runners",
+            "android/ — Keystore, QNN, Clipboard, llama JNI channels",
+            "flavors: airgap (default) · lan"]),
+        ("bridge/", "Desktop", AMBER, [
+            "testdata/vaultlink.py — pair, enroll, ask, all, verify",
+            "vault_cli/capsule_verify.py — verifier + trust store",
+            "vault_cli/vaultlink_protocol.py — v2 frames, DPAPI",
+            "bridge_server.py — FastAPI + WebSocket (lan flavor)",
+            "iqoo_mcp_server.py — 5 MCP tools",
+            "vault-embed / vault-query CLI",
+            "corpus/ + run_eval.py — labelled eval",
+            "testdata/gen_sensitive_doc.py — synthetic secrets doc"]),
+        ("modelprep/", "Models", ROADMAP, [
+            "fix_onnx.py — int32 inputs, static 1×256",
+            "convert.py — onnx2tf baseline export",
+            "export_htp.py — NPU-shaped re-export",
+            "verify.py — tokenizer, numerics, retrieval",
+            "dart_tokenizer_port.py — golden tokenizer"]),
+        ("vault_video/ · deck/", "Story", BODY, [
+            "Remotion 5-minute explainer",
+            "this deck, generated by build_deck.py",
+            "SECURITY.md — threat model and limits",
+            "NPU_QNN.md — NPU bring-up checklist",
+            "BUILD_NOTES.md — traps and measurements"]),
     ]
-    right = [
-        ("SQLite rather than a vector service",
-         "One file, no daemon, no port, no network - and the only storage "
-         "engine on Android that SQLCipher already understands."),
-        ("Encryption at rest, key in hardware",
-         "A stolen phone yields a ciphertext blob. The key never leaves the "
-         "secure element, so the index is unreadable off-device."),
-    ]
-    bullet_rows(sl, M, 4.94, 5.75, left, gap=0.86)
-    bullet_rows(sl, 6.98, 4.94, 5.70, right, gap=0.86)
+    widths = [3.45, 3.45, 2.45, 2.36]
+    x = M
+    for (t, sub, c, items), w in zip(cols, widths):
+        node(sl, x, 2.30, w, 4.1, t, None, c, tsize=10)
+        txt(sl, x + 0.11, 2.55, w - 0.2, 0.2, sub, 7.4, c, True, spc=1.0,
+            caps=True)
+        paras(sl, x + 0.11, 2.86, w - 0.22, 3.45,
+              [f"· {i}" for i in items], 9.2, BODY, lh=1.42)
+        x += w + 0.11
     return sl
 
 
-def slide_disclosure(prs):
+def s_app(prs):
     sl = new_slide(prs)
-    chrome(sl, "06 · the trust boundary",
-           "Minimal disclosure, measured in bytes.",
-           "Even the side you trust only ever sees the passages it needs - "
-           "never the corpus, never the index, never the embeddings.", "06")
+    chrome(sl, "04 · vault app anatomy", "Five tabs over one engine.",
+           "Screens are clients of long-lived services; nothing that must "
+           "outlive a screen is owned by a widget.", "04")
+    tabs = [("Vault", "ingest · ask · copy capsule"),
+            ("Model", "load one reasoner · QNN verdict"),
+            ("Bridge / Air-gap", "LAN bridge (lan) or notice"),
+            ("Link", "VaultLink session · pairing"),
+            ("Stats", "telemetry · 3 benchmarks")]
+    for i, (t, m) in enumerate(tabs):
+        node(sl, M + i * 2.42, 2.30, 2.30, 0.74, t, m, BODY, tsize=9.6,
+             msize=8.4)
+    layers = [
+        ("SERVICES", ACCENT, [("VaultEngine", "serialised encoder + store"),
+                              ("ReasonerCoordinator", "exactly one LLM loaded"),
+                              ("VaultLinkService", "clipboard protocol"),
+                              ("ComputeTelemetry", "probes + leases")]),
+        ("CORE", AMBER, [("Chunker + Tokenizer", "256-word windows · WordPiece"),
+                         ("MiniLM service", "QNN → XNNPACK → CPU"),
+                         ("VectorStore", "AES-GCM SQLite + RAM matrix"),
+                         ("Capsule + Signer", "schema · canonical · ECDSA")]),
+        ("NATIVE", ROADMAP, [("KeystoreChannel.kt", "AES + ECDSA in StrongBox/TEE"),
+                             ("QnnChannel + qnn shim", "Hexagon HTP delegate"),
+                             ("llama JNI (C++)", "GGUF · OpenCL Adreno"),
+                             ("LlmChannel.kt", "MediaPipe Gemma")]),
+    ]
+    for li, (name, c, items) in enumerate(layers):
+        y = 3.32 + li * 1.12
+        txt(sl, M, y + 0.30, 1.0, 0.2, name, 7.5, c, True, spc=1.2)
+        for i, (t, m) in enumerate(items):
+            node(sl, M + 1.05 + i * 2.75, y, 2.62, 0.86, t, m, c, tsize=9.4,
+                 msize=8.4)
+    status_line(sl, "verified", "flutter analyze clean · 236 Flutter tests · "
+                "airgap and lan release APKs build (153 MB, arm64-v8a).")
+    return sl
 
-    section_label(sl, M, 2.34, "WHAT A SINGLE QUESTION ACTUALLY MOVES", 6.0)
 
+def s_ingest(prs):
+    sl = new_slide(prs)
+    chrome(sl, "05 · vault · ingest", "From a file to an encrypted, searchable chunk.",
+           "Text is encrypted before it reaches SQLite, and only indexed after "
+           "the write succeeds, so RAM and disk never disagree.", "05")
+    stage_chain(sl, M, 2.35, CW, [
+        ("Pick", "System document picker, per-file grant, no storage "
+                 "permission. Text formats only.", "on phone"),
+        ("Chunk", "256-word windows, 32-word overlap, ids in document "
+                  "order.", "on phone"),
+        ("Tokenize", "WordPiece port verified against HuggingFace; int32 "
+                     "ids padded to 256.", "on phone"),
+        ("Embed", "MiniLM-L6-v2, 384-d, mean-pooled and L2-normalised.",
+         "npu · qnn htp / cpu"),
+        ("Encrypt", "AES-256-GCM in AndroidKeyStore, fresh 12-byte IV per "
+                    "chunk.", "strongbox / tee"),
+        ("Store + index", "SQLite row (content_cipher, embedding), then the "
+                          "RAM matrix.", "on phone"),
+    ], box_h=1.25)
+    hair(sl, M, 4.28, CW, RULE_SOFT)
+    code(sl, M, 4.50, 5.9, 1.85, [
+        "CREATE TABLE chunks (",
+        "  id             TEXT PRIMARY KEY,",
+        "  file_name      TEXT NOT NULL,",
+        "  content_cipher BLOB NOT NULL,  -- IV(12) || ct || tag(16)",
+        "  embedding      BLOB NOT NULL   -- 384 × float32 LE",
+        ");   PRAGMA user_version = 2; secure_delete = ON",
+    ], 8.6, "schema v2")
+    bullet_rows(sl, 6.85, 4.50, 5.85, [
+        ("Migration never loses data",
+         "Legacy plaintext rows are encrypted first; the table swap commits "
+         "only if every row made it, then VACUUM drops old pages."),
+        ("Fail closed",
+         "A keystore refusal aborts the insert: no row, no index entry."),
+        ("Checked on the raw file",
+         "A plaintext marker is absent from the SQLite file bytes after a "
+         "migration — tested on host."),
+    ], gap=0.62, bsize=8.3)
+    return sl
+
+
+def s_query(prs):
+    sl = new_slide(prs)
+    chrome(sl, "06 · vault · query", "From a question to a signed capsule.",
+           "Ranking touches only RAM. Only the winning chunks are read from "
+           "disk and decrypted, in one keystore batch.", "06")
+    steps = [
+        ("Embed query", "MiniLM on the verified backend", "113–137 ms", ACCENT),
+        ("Rank in RAM", "contiguous Float32List, cached norms, top-K heap",
+         "host 0.6–0.8 ms / 1k", BODY),
+        ("Fetch + decrypt", "SELECT … WHERE id IN (winners) · batch GCM",
+         "≈1.8 s on StrongBox", AMBER),
+        ("Extract", "best matching line, kept as the floor", "ms", BODY),
+        ("Reason", "the one loaded reasoner writes the capsule JSON",
+         "15.7–18.2 s", ACCENT),
+        ("Sign", "canonical payload → ECDSA-P256 in keystore", "1 op", ACCENT),
+    ]
+    w = 1.92
+    for i, (t, m, n, c) in enumerate(steps):
+        x = M + i * (w + 0.1)
+        node(sl, x, 2.35, w, 1.3, t, m, c, tsize=9.6, msize=8.4)
+        txt(sl, x + 0.11, 3.34, w - 0.2, 0.2, n, 8.6, c, True)
+        if i < len(steps) - 1:
+            arr(sl, x + w + 0.005, 3.0, x + w + 0.095, 3.0, DIM, 1.0)
+    hair(sl, M, 3.95, CW, RULE_SOFT)
+    section_label(sl, M, 4.12, "who writes the answer")
+    node(sl, M, 4.45, 3.85, 1.55, "Reasoner loaded + generation on",
+         "The model answers every query that retrieved context, whatever "
+         "the similarity score. gating_path = llm_synthesized.", ACCENT,
+         msize=9.2)
+    node(sl, M + 4.0, 4.45, 3.85, 1.55, "No model · generation off · "
+         "nothing retrieved · generation failed",
+         "The extractive line is returned instead and labelled "
+         "extractive_fallback. Retrieval is never lost.", AMBER, msize=9.2)
+    node(sl, M + 8.0, 4.45, 4.03, 1.55, "Why no similarity gate",
+         "A 0.82 / 0.50 gate was tried and removed: on the phone it refused "
+         "3 of 5 answerable questions (scores 0.30–0.45) and bypassed the "
+         "reasoner the app exists to run.", DANGER, msize=9.2)
+    status_line(sl, "measured", "Timings from iQOO 15 capsules (MiniLM on "
+                "XNNPACK, SmolLM2-1.7B Q4_K_M on llama.cpp GPU). Host ranking "
+                "figure is not a device number.")
+    return sl
+
+
+def s_capsule(prs):
+    sl = new_slide(prs)
+    chrome(sl, "07 · vault · the context capsule",
+           "An answer a program can check, not a paragraph.",
+           "Fixed schema. The model fills it; the parser repairs syntax but "
+           "never invents content; retrieval is always inside.", "07")
+    code(sl, M, 2.30, 5.6, 4.1, [
+        '{ "capsule_version": "1.1",',
+        '  "query": "...",  "answer": "...",',
+        '  "confidence": "high|medium|low|none",',
+        '  "key_facts": [{ "fact", "source", "verbatim", "verified" }],',
+        '  "caveats": [...],  "sources": [{ "file", "similarity" }],',
+        '  "context": [{ "id", "file", "similarity", "content" }],',
+        '  "extracted_answer": "...",  "extracted_from": "file:line",',
+        '  "generation": { "ran", "model", "backend", "tokens", "elapsed_ms" },',
+        '  "retrieval": { "encoder_backend", "encoder_hardware",',
+        '                 "latency_ms", "embed_ms", "chunks_scanned" },',
+        '  "gating": { "path", "top_score" },',
+        '  "provenance": { "device", "enclave", "key_security_level",',
+        '     "gating_path", "timestamp", "canonical_digest",',
+        '     "signature", "public_key" } }',
+    ], 8.5, "capsule.json")
+    bullet_rows(sl, 6.55, 2.30, 6.1, [
+        ("key_facts[].verified",
+         "True only if the quoted span really occurs in the retrieved text "
+         "(whitespace-normalised substring) — an invented quote is flagged."),
+        ("A forgiving parser",
+         "Fences, chatty preambles, trailing commas, smart quotes, "
+         "truncation: repaired syntactically outside string literals."),
+        ("The extractive floor",
+         "extracted_answer is present even when the model fails, so a "
+         "consumer that distrusts prose has something quoted."),
+        ("Runtime-sourced labels",
+         "encoder_backend and generation.backend come from what the runtimes "
+         "reported, never from device branding."),
+        ("Signed",
+         "query, answer, facts, context text, gating path, device, key level "
+         "and key hash are all under the ECDSA signature (slide 12)."),
+    ], gap=0.80, bsize=8.4)
+    return sl
+
+
+def s_compute(prs):
+    sl = new_slide(prs)
+    chrome(sl, "08 · compute placement", "Right work, right silicon, one reasoner.",
+           "NPU for embeddings, GPU for the model, CPU for ranking, secure "
+           "hardware for keys. Attribution comes from the runtime.", "08")
+    units = [
+        ("HEXAGON NPU · V81", ACCENT, "MiniLM encoder", "QNN HTP delegate, FP16, "
+         "burst mode. Accepted only after coverage, equivalence and latency "
+         "gates; else XNNPACK."),
+        ("ADRENO GPU", ACCENT, "The reasoner", "llama.cpp GGUF on OpenCL "
+         "(Qwen / SmolLM / Llama) or MediaPipe Gemma. GGML_HEXAGON stays off."),
+        ("ORYON CPU", BODY, "Ranking + fallbacks", "Top-K over the RAM matrix, "
+         "XNNPACK encoder fallback, capsule parsing and JSON."),
+        ("STRONGBOX / TEE", AMBER, "Keys", "AES-256-GCM chunk key and ECDSA "
+         "signing key; KeyInfo reported StrongBox on the iQOO 15."),
+    ]
+    for i, (hw, c, t, m) in enumerate(units):
+        x = M + i * 3.04
+        rrect(sl, x, 2.30, 2.92, 2.25, fill=PANEL, line=mix(BG, c, 0.5),
+              lw=1.0, radius=0.06)
+        txt(sl, x + 0.14, 2.42, 2.7, 0.2, hw, 7.6, c, True, spc=1.1)
+        txt(sl, x + 0.14, 2.68, 2.7, 0.26, t, 12, INK, False, DISPLAY)
+        txt(sl, x + 0.14, 3.05, 2.64, 1.45, m, 9.4, BODY, lh=1.25)
+    hair(sl, M, 4.78, CW, RULE_SOFT)
+    section_label(sl, M, 4.92, "one reasoner — a hard invariant")
+    boxes = [("Load GGUF", "llama.cpp"), ("success?", ""),
+             ("unload MediaPipe", "after idle"), ("persist activeReasoner", "")]
+    xs = [M, M + 2.45, M + 4.3, M + 6.75]
+    ws = [2.1, 1.5, 2.1, 2.4]
+    for (t, m), x, w in zip(boxes, xs, ws):
+        node(sl, x, 5.25, w, 0.62, t, m or None, ACCENT, tsize=8.4, msize=7,
+             center=True)
+    for a, b in zip(range(3), range(1, 4)):
+        arr(sl, xs[a] + ws[a], 5.56, xs[b], 5.56, ACCENT, 1.0)
+    txt(sl, M + 2.45, 5.95, 1.6, 0.2, "no → nothing changes", 7.2, DANGER, True)
+    paras(sl, 10.05, 5.18, 2.63, 1.2, [
+        "Same rule in reverse for MediaPipe.",
+        "ask() routes to the saved selection only — never 'whichever is ready'.",
+        "Startup auto-loads only the selected runtime."], 7.8, BODY, lh=1.2)
+    status_line(sl, "measured", "GPU generation confirmed on device (GPU 99 % "
+                "busy during decode). NPU: first export failed to build an "
+                "interpreter; NPU-shaped model shipped, device check pending.")
+    return sl
+
+
+def s_npu(prs):
+    sl = new_slide(prs)
+    chrome(sl, "09 · npu bring-up", "What the Hexagon NPU needs, and how we prove it ran.",
+           "Qualcomm's QNN runtime and LiteRT delegate from Maven Central; a "
+           "C shim over the external-delegate ABI; strict acceptance.", "09")
+    req = [("1 · Libraries", "libQnnHtp, HtpPrepare, System, TFLiteDelegate, "
+            "V81 + V79 skel/stub"),
+           ("2 · Extracted", "useLegacyPackaging — DSP loads the skel by path"),
+           ("3 · FastRPC", "uses-native-library libcdsprpc.so"),
+           ("4 · Skel path", "ADSP_LIBRARY_PATH + skel_library_dir"),
+           ("5 · Unsigned PD", "htp_pd_session 0 — no Qualcomm signing"),
+           ("6 · FP16, burst", "htp_precision 1 · performance mode 2"),
+           ("7 · NPU-shaped graph", "static, no SHAPE / int64, FP16-safe mask")]
+    section_label(sl, M, 2.28, "bring-up checklist (iQOO 15 · SM8850 · V81)")
+    for i, (t, m) in enumerate(req):
+        y = 2.58 + i * 0.50
+        rrect(sl, M, y, 4.55, 0.42, fill=PANEL, line=RULE_SOFT, lw=0.6,
+              radius=0.04)
+        txt(sl, M + 0.12, y + 0.06, 1.55, 0.2, t, 8, INK, True)
+        txt(sl, M + 1.68, y + 0.07, 2.8, 0.3, m, 7.4, BODY, lh=1.1)
+    # model re-export
+    node(sl, 5.45, 2.28, 3.35, 2.0, "Model re-export (export_htp.py)", None,
+         AMBER)
+    stat(sl, 5.62, 2.65, 1.5, "664", "nodes before", DANGER, 22)
+    txt(sl, 7.0, 2.72, 0.3, 0.3, "→", 16, DIM)
+    stat(sl, 7.3, 2.65, 1.5, "305", "nodes after", ACCENT, 22)
+    paras(sl, 5.62, 3.52, 3.05, 0.75, [
+        "82 SHAPE, int64 tensors, −3.4e38 mask removed.",
+        "Cosine 1.000000 vs ONNX and previous model."], 7.6, BODY)
+    # delegate path
+    node(sl, 5.45, 4.42, 3.35, 1.95, "Delegate path", None, ROADMAP)
+    paras(sl, 5.6, 4.78, 3.1, 1.5, [
+        ("Dart QnnHtpDelegate", INK, True), "  ↓ FFI",
+        ("libvault_qnn_delegate.so", INK, True), "  ↓ dlopen",
+        ("libQnnTFLiteDelegate.so", INK, True),
+        "tflite_plugin_create_delegate(k, v, n)"], 7.6, BODY, MONO, lh=1.12)
+    # acceptance gates
+    node(sl, 8.95, 2.28, 3.73, 4.09, "Acceptance gates", None, ACCENT)
+    gates = [("Smoke", "finite, unit-length output"),
+             ("Coverage", "delegate's own log: ≥ 75 % of nodes delegated; "
+              "no report = rejected"),
+             ("Equivalence", "12 passages + 4 queries vs XNNPACK: min cosine "
+              "≥ 0.995, same top-1, top-3 ≥ 0.9"),
+             ("Latency", "QNN median ≤ 1.10 × XNNPACK")]
+    for i, (t, m) in enumerate(gates):
+        y = 2.66 + i * 0.66
+        txt(sl, 9.1, y, 3.4, 0.2, t, 8.6, INK, True)
+        txt(sl, 9.1, y + 0.21, 3.45, 0.42, m, 7.5, BODY, lh=1.15)
+    hair(sl, 9.1, 5.35, 3.45, RULE_SOFT)
+    for i, (lbl, c) in enumerate([("QNN HTP verified", ACCENT),
+                                  ("QNN unavailable", AMBER),
+                                  ("XNNPACK fallback", AMBER)]):
+        pill(sl, 9.1, 5.48 + i * 0.29, lbl, c, 1.7)
+    txt(sl, 10.9, 5.52, 1.7, 0.8, "the only three verdicts the UI and "
+        "capsules may show", 7.2, MUTED, lh=1.2)
+    status_line(sl, "gap", "First device attempt: delegate created, interpreter "
+                "build failed. Cause traced to the export; fix built, "
+                "not yet confirmed on the iQOO 15.")
+    return sl
+
+
+def s_security_overview(prs):
+    sl = new_slide(prs)
+    chrome(sl, "10 · security · overview", "Five layers, each checkable.",
+           "Security is stated as what is enforced by hardware, by protocol or "
+           "by build configuration — with its limits.", "10")
+    layers = [
+        ("At rest", ACCENT, "AES-256-GCM per chunk, key in AndroidKeyStore "
+         "(StrongBox → TEE). Tamper → fail closed.", "KeystoreChannel.kt · vector_store.dart"),
+        ("Attribution", ACCENT, "Every capsule ECDSA-P256 signed over a "
+         "length-prefixed canonical payload; laptop verifies against a pinned key.",
+         "capsule_signing.dart · capsule_verify.py"),
+        ("In transit", ACCENT, "VAULTLINK/2: pairing code → HMAC key schedule → "
+         "AES-GCM frames, direction keys, replay window.", "vaultlink_secure.dart · vaultlink_protocol.py"),
+        ("Residue", AMBER, "Capsules auto-scrub from the clipboard after 20 s on "
+         "both devices, only if unchanged.", "ephemeral_clipboard.dart · vaultlink.py"),
+        ("Network", ACCENT, "airgap flavor requests zero network permissions; "
+         "only the lan flavor can open the bridge socket.", "build.gradle.kts · AndroidManifest"),
+    ]
+    for i, (t, c, m, f) in enumerate(layers):
+        y = 2.28 + i * 0.84
+        rect(sl, M, y, 0.06, 0.70, fill=c)
+        txt(sl, M + 0.22, y + 0.04, 1.8, 0.26, t, 13, INK, False, DISPLAY)
+        txt(sl, M + 2.15, y + 0.03, 6.4, 0.5, m, 9, BODY, lh=1.22)
+        txt(sl, M + 8.7, y + 0.10, 3.3, 0.4, f, 7.4, MUTED, lh=1.2, font=MONO)
+        if i < len(layers) - 1:
+            hair(sl, M + 0.22, y + 0.78, CW - 0.22, RULE_SOFT)
+    status_line(sl, "verified", "StrongBox level and signature validity seen on "
+                "device; aapt2: airgap = no network permission, lan = INTERNET.",
+                y=6.56)
+    return sl
+
+
+def s_at_rest(prs):
+    sl = new_slide(prs)
+    chrome(sl, "11 · security · encryption at rest",
+           "A stolen phone yields ciphertext.",
+           "The chunk key is generated inside AndroidKeyStore and never "
+           "exported. Dart sends bytes in and gets bytes out.", "11")
+    # key generation flow
+    node(sl, M, 2.30, 2.6, 0.85, "generate key", "AES-256 · GCM · no padding · "
+         "randomized IV", ACCENT, msize=7.4)
+    node(sl, M + 3.0, 2.30, 2.4, 0.85, "StrongBox?", "setIsStrongBoxBacked(true)",
+         ACCENT, msize=7.4)
+    node(sl, M + 5.8, 2.10, 2.5, 0.72, "StrongBox key", "reported on iQOO 15",
+         ACCENT, msize=7.2)
+    node(sl, M + 5.8, 3.00, 2.5, 0.72, "TEE KeyStore key", "fallback, still "
+         "hardware", AMBER, msize=7.2)
+    arr(sl, M + 2.6, 2.72, M + 3.0, 2.72, ACCENT, 1.0)
+    arr(sl, M + 5.4, 2.60, M + 5.8, 2.46, ACCENT, 1.0, "yes", ACCENT, lw_box=0.5)
+    arr(sl, M + 5.4, 2.84, M + 5.8, 3.36, AMBER, 1.0, "no", AMBER, lw_box=0.5,
+        loff=0.02)
+    barrier(sl, M + 8.7, 2.40, 3.33, 0.62, "never an app-held software key")
+    # payload format
+    section_label(sl, M, 4.0, "payload format stored in content_cipher")
+    segs = [("IV", 12, ACCENT, "12 bytes, keystore-generated"),
+            ("ciphertext", 46, BODY, "same length as the plaintext"),
+            ("tag", 16, AMBER, "16-byte GCM tag")]
+    x = M
+    total = sum(s[1] for s in segs)
+    for name, n, c, m in segs:
+        w = 7.2 * n / total
+        rect(sl, x, 4.32, w - 0.04, 0.5, fill=mix(BG, c, 0.25),
+             line=mix(BG, c, 0.6), lw=0.7)
+        txt(sl, x, 4.44, w - 0.04, 0.24, name, 9, INK, True,
+            align=PP_ALIGN.CENTER)
+        txt(sl, x, 4.90, w - 0.04, 0.3, m, 7.2, MUTED, align=PP_ALIGN.CENTER)
+        x += w
+    bullet_rows(sl, 8.15, 3.98, 4.5, [
+        ("Lazy decryption", "Only the top-K winners are decrypted, in one "
+         "channel call. Ranking decrypts nothing (tested)."),
+        ("Fail closed", "A flipped bit anywhere → AUTH_FAILED → "
+         "ChunkIntegrityException. No partial plaintext."),
+        ("Latency cost", "StrongBox is a separate secure element: ≈1.8 s to "
+         "decrypt 3 chunks on the phone. TEE for the chunk key is the fix."),
+    ], gap=0.78, bsize=8.2)
+    status_line(sl, "verified", "Host: GCM format, IV uniqueness, tamper and "
+                "truncation rejection, raw DB file free of plaintext. JDK JCA "
+                "↔ Python interop verified.")
+    return sl
+
+
+def s_signing(prs):
+    sl = new_slide(prs)
+    chrome(sl, "12 · security · signed capsules",
+           "Who produced this answer, and did anyone edit it?",
+           "The phone signs a canonical encoding of the capsule. The laptop "
+           "rebuilds it byte-for-byte and trusts only a pinned key.", "12")
+    code(sl, M, 2.30, 5.9, 2.25, [
+        "payload = LP(\"vault-capsule-sig/v1\") LP(query) LP(answer)",
+        "          LP(timestamp) LP(gating_path) LPL(chunk_ids)",
+        "          LP(confidence) LPL(key_fact_texts)",
+        "          LPL(sha256(context_content)) LP(device)",
+        "          LP(key_security_level) LP(sha256(public_key))",
+        "LP(s) = \"<utf8 byte length>:\" s",
+        "canonical_digest = SHA-256(payload)",
+        "signature = ECDSA-P256-SHA256(payload)   # in keystore",
+    ], 8.4, "canonical payload")
+    node(sl, M, 4.72, 5.9, 1.55, "Why length-prefixed, not query|answer|…",
+         "A pipe-joined string is not injective: query \"a|b\" + answer \"c\" "
+         "signs identically to \"a\" + \"b|c\". It also left the quoted context "
+         "and key facts unsigned, so a relay could rewrite the evidence under "
+         "a valid signature.", DANGER, msize=8.2)
+    # verify chain
+    section_label(sl, 6.85, 2.28, "laptop verification — every step fails closed")
+    steps = [("provenance present", "else MISSING_PROVENANCE"),
+             ("rebuild payload from JSON", "else MALFORMED"),
+             ("SHA-256 == canonical_digest", "else DIGEST_MISMATCH"),
+             ("real DER signature", "MOCK_SIG / null → UNSIGNED"),
+             ("public key is P-256", "else BAD_PUBLIC_KEY"),
+             ("ECDSA verifies", "else INVALID_SIGNATURE"),
+             ("key == pinned device key", "NOT_ENROLLED / KEY_MISMATCH")]
+    for i, (t, m) in enumerate(steps):
+        y = 2.58 + i * 0.52
+        c = ACCENT if i == len(steps) - 1 else BODY
+        node(sl, 6.85, y, 3.3, 0.42, t, None, c, tsize=8.2, bar=False)
+        txt(sl, 10.3, y + 0.12, 2.4, 0.2, m, 7.2, MUTED, font=MONO)
+        if i < len(steps) - 1:
+            arr(sl, 8.5, y + 0.42, 8.5, y + 0.52, DIM, 0.8)
+    status_line(sl, "verified", "Python verifier rejects every tamper case "
+                "(answer, query, timestamp, path, ids, context, facts, level, "
+                "digest, signature, attacker key). Same vector asserted by Dart.")
+    return sl
+
+
+def s_trust(prs):
+    sl = new_slide(prs)
+    chrome(sl, "13 · security · trust & attestation",
+           "A key in the message is not a reason to trust the message.",
+           "Anyone can sign their own capsule. Trust comes from pinning the "
+           "device key once, over the already-authenticated link.", "13")
+    lifeline(sl, 2.2, 2.3, 2.45, "Phone", "keystore signing key", ACCENT)
+    lifeline(sl, 6.65, 2.3, 2.45, "Office Kit", "clipboard mirror", AMBER)
+    lifeline(sl, 11.1, 2.3, 2.45, "Laptop", "vaultlink.py", None)
+    arr(sl, 11.1, 3.25, 2.2, 3.25, BODY, 1.0, "pair: type code shown on phone "
+        "(never pasted)", BODY, lw_box=5)
+    arr(sl, 11.1, 3.85, 2.2, 3.85, BODY, 1.0, "sealed enroll request", BODY,
+        lw_box=4)
+    arr(sl, 2.2, 4.45, 11.1, 4.45, ACCENT, 1.1, "sealed reply: public key + "
+        "attestation chain + KeyInfo level", ACCENT, lw_box=6)
+    node(sl, 8.5, 4.85, 4.18, 1.3, "Laptop pins the key",
+         "trusted_devices.json. A different key never silently replaces it "
+         "(TRUSTED_KEY_MISMATCH). Re-enrol = explicit unenroll + enroll.",
+         ACCENT, msize=7.8)
+    node(sl, M, 4.85, 4.3, 1.3, "Attestation chain, honestly scoped",
+         "Chain linkage, leaf = signing key and the KeyDescription security "
+         "level are checked. Hardware is PROVEN only with a trusted Google "
+         "root supplied (--attestation-root).", AMBER, msize=7.8)
+    node(sl, 5.1, 4.85, 3.25, 1.3, "Security line printed",
+         "Built from signed fields: \"Qualcomm TEE (Qualcomm SM8850)\" only if "
+         "the signed device string says so.", BODY, msize=7.8)
+    status_line(sl, "built", "Enrollment path built and unit-tested with a "
+                "synthetic chain; on-device enroll not yet run (phone "
+                "used legacy v1 in the last session).")
+    return sl
+
+
+def s_vlp_loop(prs):
+    sl = new_slide(prs)
+    chrome(sl, "14 · vaultlink protocol (vlp)",
+           "A request/response loop carried by the clipboard.",
+           "No socket, no IP address, no Android permission. The phone polls "
+           "its own clipboard while the Link tab is in the foreground.", "14")
+    lifeline(sl, 2.0, 2.28, 3.2, "vaultlink.py", "laptop", None)
+    lifeline(sl, 6.65, 2.28, 3.2, "Office Kit", "mirrors clipboard", AMBER)
+    lifeline(sl, 11.3, 2.28, 3.2, "VaultLinkService", "phone, 700 ms poll",
+             ACCENT)
+    msgs = [(2.0, 6.65, 3.15, "VAULTLINK/2 req frame → clipboard", BODY),
+            (6.65, 11.3, 3.55, "mirrored to phone clipboard", BODY),
+            (11.3, 6.65, 4.05, "{status: processing} (sealed)", AMBER),
+            (6.65, 2.0, 4.35, "mirrored back", AMBER),
+            (11.3, 6.65, 5.05, "sealed capsule (TTL 20 s)", ACCENT),
+            (6.65, 2.0, 5.40, "mirrored back", ACCENT)]
+    for x1, x2, y, lbl, c in msgs:
+        arr(sl, x1, y, x2, y, c, 1.0, lbl, c, lw_box=4.2, loff=-0.21)
+    node(sl, 11.42, 4.30, 1.26, 0.62, "open · verify", "then ask()", ACCENT,
+         tsize=7.6, msize=7, bar=False)
+    node(sl, M, 5.62, 2.9, 0.62, "verify · print · scrub", "digest, ECDSA, "
+         "pinned key; 20→1 countdown", BODY, tsize=8, msize=7)
+    code(sl, 4.0, 5.70, 5.0, 0.62, [
+        'VAULTLINK/2\\n{"kid":"8b1e…","dir":"req","ct":"<base64 IV‖ct‖tag>"}'],
+        7.3)
+    paras(sl, 9.2, 5.58, 3.5, 0.9, [
+        "Ops: ping · query · enroll (v2 only).",
+        "Only frames with the prefix are touched; anything else a user copies "
+        "is left alone."], 7.8, BODY, lh=1.2)
+    status_line(sl, "measured", "Clipboard loop exercised end-to-end with the "
+                "iQOO 15 over Office Kit (legacy v1 for the latest run; v2 "
+                "built and host-tested).")
+    return sl
+
+
+def s_vlp_crypto(prs):
+    sl = new_slide(prs)
+    chrome(sl, "15 · vlp v2 · cryptography",
+           "One typed code becomes four purpose-bound values.",
+           "The code never crosses the clipboard it protects. Everything after "
+           "it is standard primitives: HMAC-SHA256 and AES-256-GCM.", "15")
+    node(sl, M, 2.35, 2.8, 1.0, "Pairing code", "20 Crockford base32 chars · "
+         "100 bits · shown on phone, typed on laptop", ACCENT, msize=7.4)
+    node(sl, M + 3.35, 2.35, 3.0, 1.0, "root", "HMAC(\"vaultlink/2 pairing\", "
+         "code) · laptop stores under DPAPI", AMBER, msize=7.4)
+    arr(sl, M + 2.8, 2.85, M + 3.35, 2.85, ACCENT, 1.0)
+    outs = [("K_req", "HMAC(root, \"…req\")", "laptop → phone"),
+            ("K_rep", "HMAC(root, \"…rep\")", "phone → laptop"),
+            ("kid", "hex(HMAC(root, \"…kid\"))[0:16]", "which pairing")]
+    for i, (t, m, n) in enumerate(outs):
+        y = 2.05 + i * 0.62
+        node(sl, M + 6.9, y, 3.1, 0.52, t, m, ACCENT, tsize=8.4, msize=7)
+        txt(sl, M + 10.15, y + 0.16, 1.9, 0.2, n, 7.6, MUTED, True)
+        arr(sl, M + 6.35, 2.85, M + 6.9, y + 0.26, DIM, 0.9)
+    hair(sl, M, 4.08, CW, RULE_SOFT)
+    code(sl, M, 4.25, 6.0, 2.05, [
+        "frame = \"VAULTLINK/2\\n\" + {kid, dir, ct}",
+        "ct    = IV(12) ‖ AES-256-GCM(json) ‖ tag(16)",
+        "AAD   = \"VAULTLINK/2|\" + dir + \"|\" + kid",
+        "request json: {id, op, ts, q, k, generate}",
+        "reply   json: {id, status, ...capsule, compute}",
+    ], 8.6, "frame format")
+    bullet_rows(sl, 6.9, 4.25, 5.8, [
+        ("Direction binding", "Separate keys and AAD per direction: a reply "
+         "cannot be replayed to the phone as a request."),
+        ("Freshness", "Phone rejects ts outside ±5 min and any id seen in the "
+         "last 10 min."),
+        ("Confidentiality", "Office Kit, clipboard history and other apps see "
+         "base64 ciphertext only."),
+    ], gap=0.66, bsize=8.3)
+    status_line(sl, "verified", "Key schedule vector shared by Dart and Python; "
+                "tamper, wrong key, reflection, replay and stale ts all rejected "
+                "in tests.")
+    return sl
+
+
+def s_vlp_threats(prs):
+    sl = new_slide(prs)
+    chrome(sl, "16 · vlp · threat model", "What v2 stops, and what it does not.",
+           "v1 was plaintext and unauthenticated. It remains only behind an "
+           "explicit, labelled legacy switch.", "16")
+    table(sl, M, 2.30, 7.55, [("Threat", 0.40), ("v1", 0.18), ("v2", 0.42)], [
+        ("Another app queries the vault", "open", "needs the pairing key"),
+        ("Clipboard sync reads Q&A", "plaintext", "ciphertext only"),
+        ("Forged / edited reply", "undetected", "GCM tag + ECDSA capsule"),
+        ("Reply reflected as request", "possible", "direction keys + AAD"),
+        ("Replay of a captured request", "possible", "±5 min, id cache"),
+        ("Capsule left on clipboard", "indefinite", "20 s compare-and-clear"),
+        ("Attacker's own signing key", "accepted", "pinned key mismatch"),
+    ], row_h=0.44, cell_size=8.6,
+        colors=[ACCENT] * 7)
+    node(sl, 8.45, 2.30, 4.23, 3.55, "Not stopped — stated plainly", None,
+         DANGER)
+    paras(sl, 8.6, 2.68, 3.95, 3.1, [
+        ("Malware as the same Windows user", INK, True),
+        "DPAPI protects the root from other accounts, not your own processes.",
+        ("Shoulder-surfing the code", INK, True),
+        "Hidden until tapped; it is still a screen.",
+        ("Replay across an app restart", INK, True),
+        "Replay cache is in memory; ops are read-only and replies sealed.",
+        ("Traffic analysis", INK, True),
+        "Frame size and timing are visible.",
+    ], 8, BODY, lh=1.22)
+    status_line(sl, "built", "Legacy v1 is off by default on the phone; the "
+                "laptop needs --insecure-v1 and prints a warning.")
+    return sl
+
+
+def s_residue(prs):
+    sl = new_slide(prs)
+    chrome(sl, "17 · clipboard residue & air gap",
+           "Leave nothing behind, and nowhere to send it.",
+           "Both ends scrub the capsule after 20 seconds, but only if the "
+           "clipboard still holds exactly what Vault put there.", "17")
+    flow = [("copy capsule", "sensitive clip flag (Android 13+)", ACCENT),
+            ("20 s countdown", "banner + progress; Win: 20→1", BODY),
+            ("read clipboard", "still byte-identical?", AMBER)]
+    for i, (t, m, c) in enumerate(flow):
+        x = M + i * 2.55
+        node(sl, x, 2.35, 2.3, 0.85, t, m, c, tsize=9, msize=7.4)
+        if i < 2:
+            arr(sl, x + 2.3, 2.78, x + 2.55, 2.78, DIM, 1.0)
+    node(sl, M + 7.65, 2.05, 2.45, 0.7, "yes → clear", "clearPrimaryClip / "
+         "EmptyClipboard", ACCENT, msize=7.2)
+    node(sl, M + 7.65, 2.95, 2.45, 0.7, "no → leave it", "user copied "
+         "something else", BODY, msize=7.2)
+    arr(sl, M + 7.4, 2.78, M + 7.65, 2.40, ACCENT, 1.0)
+    arr(sl, M + 7.4, 2.78, M + 7.65, 3.30, BODY, 1.0)
+    txt(sl, M + 10.25, 2.20, 1.8, 1.5, "Background on Android? Unreadable → "
+        "retried on resume, never cleared blind.", 7.6, MUTED, lh=1.2)
+    hair(sl, M, 3.95, CW, RULE_SOFT)
+    section_label(sl, M, 4.10, "network isolation is a build property")
+    for i, (flavor, perm, note, c) in enumerate([
+            ("airgap (default)", "no network permission",
+             "src/airgapRelease strips INTERNET, ACCESS_NETWORK_STATE, "
+             "WIFI/CHANGE_NETWORK_STATE even if a library merges them in. "
+             "Bridge tab replaced by an air-gap notice.", ACCENT),
+            ("lan", "android.permission.INTERNET",
+             "Opt-in WebSocket co-processor bridge to bridge_server.py; "
+             "phone dials out, no listening port on the device.", AMBER)]):
+        x = M + i * 6.1
+        node(sl, x, 4.42, 5.9, 1.9, flavor, None, c, tsize=11)
+        txt(sl, x + 0.12, 4.78, 5.6, 0.22, perm, 9, c, True, font=MONO)
+        txt(sl, x + 0.12, 5.10, 5.6, 1.15, note, 8.4, BODY, lh=1.25)
+    status_line(sl, "verified", "aapt2 dump permissions on both release APKs; "
+                "Win32 scrub tested on a real clipboard (cleared vs replaced).")
+    return sl
+
+
+def s_desktop(prs):
+    sl = new_slide(prs)
+    chrome(sl, "18 · desktop tooling", "The laptop side: small, scriptable, verifying.",
+           "Two transports to the same engine — the clipboard loop for the "
+           "air-gapped build, a LAN bridge for IDE and MCP clients.", "18")
+    node(sl, M, 2.30, 5.95, 2.5, "vaultlink.py  (clipboard, any build)", None,
+         ACCENT)
+    code(sl, M + 0.12, 2.66, 5.7, 2.0, [
+        "python vaultlink.py pair XXXXX-XXXXX-XXXXX-XXXXX",
+        "python vaultlink.py enroll [--attestation-root root.pem]",
+        "python vaultlink.py ping",
+        "python vaultlink.py ask \"question\" [-k 5] [--no-generate]",
+        "python vaultlink.py all          # 14 ground-truth questions",
+        "python vaultlink.py verify out/capsule_s01.json",
+    ], 8.4)
+    node(sl, 6.73, 2.30, 5.95, 2.5, "bridge_server.py  (lan flavor)", None, AMBER)
+    paras(sl, 6.86, 2.66, 5.7, 2.1, [
+        ("IDE / MCP / query.py  → HTTP 127.0.0.1:8000", INK, True),
+        "            ↓",
+        ("bridge_server.py  ← WebSocket /ws/phone ← phone dials out", INK, True),
+        "",
+        "/api/status · /api/telemetry · /api/query · /api/llm · /api/ask · "
+        "/api/index",
+        "MCP: iqoo_get_status · iqoo_get_telemetry · iqoo_query_agent · "
+        "iqoo_ask_capsule · iqoo_index_code",
+    ], 7.8, BODY, lh=1.2)
+    section_label(sl, M, 5.02, "evaluation and test data")
+    for i, (t, m) in enumerate([
+            ("gen_sensitive_doc.py", "synthetic HR/finance secrets doc + 14 "
+             "labelled questions, invalid-by-construction values"),
+            ("corpus/ + run_eval.py", "4 policy documents with ground truth "
+             "for retrieval scoring"),
+            ("vault-embed · vault-query", "CLI to push documents and query "
+             "over the bridge")]):
+        node(sl, M + i * 4.08, 5.32, 3.9, 0.95, t, m, BODY, tsize=8.6, msize=7.6)
+    return sl
+
+
+def s_telemetry(prs):
+    sl = new_slide(prs)
+    chrome(sl, "19 · telemetry & benchmarks",
+           "Measure what the hardware did, not what the brochure says.",
+           "Device counters where Android exposes them, and per-hardware "
+           "leases from the code that dispatched the work.", "19")
+    # lease timeline
+    section_label(sl, M, 2.28, "runtime leases — independent per hardware")
+    lanes = [("NPU · minilm", ACCENT, [(0.5, 0.95), (1.55, 2.0), (2.6, 3.05),
+                                      (3.65, 4.1), (4.7, 5.15)]),
+             ("GPU · llama.cpp", AMBER, [(0.2, 5.5)]),
+             ("CPU · ranking", BODY, [(1.0, 1.1), (2.3, 2.4), (3.5, 3.6),
+                                     (4.7, 4.8)])]
+    x0, w0 = M + 1.6, 5.6
+    for i, (name, c, spans) in enumerate(lanes):
+        y = 2.62 + i * 0.46
+        txt(sl, M, y + 0.06, 1.55, 0.2, name, 7.8, INK, True)
+        rect(sl, x0, y + 0.12, w0, 0.012, fill=RULE_SOFT)
+        for a, b in spans:
+            rrect(sl, x0 + a / 6 * w0, y, (b - a) / 6 * w0, 0.26,
+                  fill=mix(BG, c, 0.55), radius=0.03)
+    rect(sl, x0 + 0.2 / 6 * w0, 2.52, (5.5 - 0.2) / 6 * w0, 1.46,
+         fill=None, line=mix(BG, ACCENT, 0.5), lw=0.7,
+         dash=MSO_LINE_DASH_STYLE.DASH)
+    txt(sl, x0, 4.02, w0, 0.2, "npu_gpu_overlap_ms = wall time both had work "
+        "in flight", 7.6, ACCENT, True)
+    paras(sl, 7.95, 2.28, 4.7, 1.9, [
+        ("Device-wide probes", INK, True),
+        "CPU /proc/stat · GPU KGSL busy · NPU devfreq (not exposed on "
+        "production Android — shown unavailable, never faked) · thermal via "
+        "PowerManager",
+        ("Attribution rules", INK, True),
+        "NPU only after QNN HTP verified; GPU only when ggml reports the "
+        "model on a GPU device; MediaPipe by its load backend.",
+    ], 8, BODY, lh=1.22)
+    hair(sl, M, 4.40, CW, RULE_SOFT)
+    section_label(sl, M, 4.52, "benchmarks on the stats tab")
+    for i, (t, m) in enumerate([
+            ("Embedding", "warm-up discarded; P50/P90/P95; per-backend sweep "
+             "incl. QNN HTP"),
+            ("Reasoning", "timed generations on the loaded runtime with "
+             "utilisation averaged over the run"),
+            ("Two-model pipeline", "MiniLM · CPU ranking · retrieval-only · "
+             "prefill/decode/tok/s · indexing during generation · RSS · "
+             "thermal · QNN + llama status"),
+            ("Rank micro-bench", "bench_rank_main.dart: 1,000 and 5,000 × 384 "
+             "in release AOT on device")]):
+        node(sl, M + i * 3.04, 4.84, 2.92, 1.45, t, m, ACCENT if i == 2 else
+             BODY, tsize=9, msize=7.8)
+    status_line(sl, "built", "Pipeline benchmark built; device run pending "
+                "once QNN is confirmed. Host rank bench: 0.6–0.8 ms "
+                "(not a device figure).")
+    return sl
+
+
+def s_evidence(prs):
+    sl = new_slide(prs)
+    chrome(sl, "20 · evidence", "What is measured, what is verified, what is open.",
+           "Numbers from the iQOO 15 VaultLink sessions and from host "
+           "tooling, each labelled by where it came from.", "20")
+    table(sl, M, 2.30, CW, [("Claim", 0.34), ("Result", 0.44),
+                            ("Status", 0.22)], [
+        ("SoC reported by Build", "SM8850 · Hexagon V81 skel packaged", "MEASURED"),
+        ("Key location (KeyInfo)", "StrongBox for AES + ECDSA keys", "MEASURED"),
+        ("Capsule signature", "valid ECDSA-P256 from device key", "MEASURED"),
+        ("MiniLM encoder", "XNNPACK: 58 ms load bench · 113–137 ms in query", "MEASURED"),
+        ("Retrieval end-to-end", "≈2.0 s (StrongBox decrypt of 3 chunks)", "MEASURED"),
+        ("Reasoner", "SmolLM2-1.7B Q4_K_M · llama.cpp GPU · ≈10.5 tok/s e2e", "MEASURED"),
+        ("QNN HTP embeddings", "first export failed; re-export pending", "OPEN GAP"),
+        ("Network permissions", "airgap: none · lan: INTERNET (aapt2)", "VERIFIED"),
+        ("Crypto + protocol", "236 Flutter · 66 Python tests; JCA interop", "VERIFIED"),
+        ("NPU-shaped model", "305 nodes · cosine 1.000000 vs ONNX", "VERIFIED"),
+    ], row_h=0.395, cell_size=8.4,
+        colors=[ACCENT, ACCENT, ACCENT, ACCENT, ACCENT, ACCENT, DANGER, ACCENT,
+                ACCENT, ACCENT])
+    return sl
+
+
+def s_learned(prs):
+    sl = new_slide(prs)
+    chrome(sl, "21 · what the device taught us",
+           "When answers fail, look at retrieval before the model.",
+           "Five sensitive-doc questions on the phone: every question that "
+           "reached the model was answered correctly.", "21")
+    # chunk truncation diagram
+    section_label(sl, M, 2.28, "256-word chunk vs MiniLM's 254-token window")
+    rect(sl, M, 2.62, 6.0, 0.46, fill=mix(BG, ACCENT, 0.3), line=None)
+    rect(sl, M + 6.0 * 0.63, 2.62, 6.0 * 0.37, 0.46, fill=mix(BG, DANGER, 0.35))
+    txt(sl, M, 2.74, 6.0 * 0.63, 0.22, "embedded · 254 tokens", 8, INK, True,
+        align=PP_ALIGN.CENTER)
+    txt(sl, M + 6.0 * 0.63, 2.74, 6.0 * 0.37, 0.22, "never seen · 35–38 %", 8,
+        INK, True, align=PP_ALIGN.CENTER)
+    for q, off, ok in [("s01 salary · token 148", 148, True),
+                       ("s03 bonus 272 · s11 card 280", 276, False)]:
+        px = M + 6.0 * off / 405
+        line(sl, px, 3.12, px, 3.34, ACCENT if ok else DANGER, 1.2)
+        txt(sl, px - 1.1, 3.36, 2.2, 0.2, q, 7.4, ACCENT if ok else DANGER,
+            True, align=PP_ALIGN.CENTER)
+    paras(sl, M, 3.75, 6.0, 1.0, [
+        "A ~400-token chunk is cut at 254 tokens, so facts in the back third "
+        "are unretrievable, and one vector averaged over many facts dilutes "
+        "single-fact questions (scores 0.30–0.45)."], 8.4, BODY, lh=1.25)
+    table(sl, 7.0, 2.30, 5.68, [("Symptom", 0.42), ("Cause", 0.58)], [
+        ("3/5 refused", "similarity gate — removed"),
+        ("facts not found", "chunks overflow the encoder window"),
+        ("≈2 s retrieval", "chunk key in StrongBox"),
+        ("≈10.5 tok/s e2e", "long prompt + verbose JSON"),
+        ("no NPU", "export with shape ops + int64"),
+    ], row_h=0.40, cell_size=8.3)
+    hair(sl, M, 4.95, CW, RULE_SOFT)
+    section_label(sl, M, 5.08, "fixes, in order of impact")
+    for i, (t, m, c) in enumerate([
+            ("Token-aware chunks", "≤ ~200 tokens, ~40 overlap; re-index", ACCENT),
+            ("Chunk key in TEE", "keep signing key in StrongBox", ACCENT),
+            ("Confirm QNN on device", "NPU-shaped model shipped", AMBER),
+            ("Record prefill/decode", "cap tokens for short answers", BODY)]):
+        node(sl, M + i * 3.04, 5.40, 2.92, 0.9, t, m, c, tsize=9, msize=7.8)
+    status_line(sl, "measured", "Token offsets computed with the verified "
+                "tokenizer port on the exact chunks the phone returned.")
+    return sl
+
+
+def s_roadmap(prs):
+    sl = new_slide(prs)
+    chrome(sl, "22 · roadmap & limits", "What comes next, and what is not claimed.",
+           "Ordered by what moves answer quality and demo credibility first.",
+           "22")
+    now = [("Retrieval quality", "token-aware chunking, re-index, eval with "
+            "run_eval.py on the sensitive doc"),
+           ("NPU confirmed", "QNN HTP verified on iQOO 15, pipeline benchmark "
+            "with NPU∩GPU overlap"),
+           ("Latency", "TEE chunk key; shorter capsule prompt; prefill/decode "
+            "split in capsules")]
+    nxt = [("Embeddings encrypted", "decrypt once into RAM at open, zeroise "
+            "on background"),
+           ("Unlocked-device keys", "setUnlockedDeviceRequired after device "
+            "testing"),
+           ("Fresh attestation", "laptop-supplied challenge at enrollment")]
+    later = [("TLS / Noise for lan bridge", "same pairing as VaultLink"),
+             ("Persisted replay cache", "reject replays across restarts"),
+             ("PAKE pairing", "SPAKE2 + 6-digit compare; retire legacy v1")]
+    for ci, (title, c, items) in enumerate([("NOW", ACCENT, now),
+                                             ("NEXT", AMBER, nxt),
+                                             ("LATER", ROADMAP, later)]):
+        x = M + ci * 4.08
+        txt(sl, x, 2.30, 3.8, 0.24, title, 9, c, True, spc=1.4)
+        rect(sl, x, 2.58, 3.86, 0.03, fill=mix(BG, c, 0.6))
+        for i, (t, m) in enumerate(items):
+            node(sl, x, 2.78 + i * 0.86, 3.86, 0.76, t, m, None, tsize=9,
+                 msize=7.8)
+    node(sl, M, 5.45, CW, 0.9, "Not claimed", "NPU acceleration is not claimed "
+         "until QNN HTP is verified on the device. Embeddings are plaintext "
+         "vectors. Hardware level is device-reported unless the attestation "
+         "root is supplied. The QNN AARs carry the Qualcomm AI Hub Model License.",
+         DANGER, msize=8.4)
+    return sl
+
+
+def s_summary(prs):
+    sl = new_slide(prs)
+    starfield(sl, 8.4, 0.3, 4.7, 6.9, n=70, seed=5)
+    chrome(sl, "23 · in one page", "Vault, in one page.", None, "23")
     rows = [
-        ("Your corpus", "1,000 MB", 1.00, DANGER, "never crosses"),
-        ("The vector index", "approx. 200 MB", 0.20, DANGER, "never crosses"),
-        ("Chunk embeddings", "1.5 KB each", 0.015, DANGER, "never crosses"),
-        ("Your question", "approx. 40 tokens", 0.006, BODY, "crosses"),
-        ("Top-k passages", "approx. 800 tokens", 0.012, ACCENT,
-         "crosses, cited"),
+        ("Overall", "Phone holds corpus, index, encoder and one reasoner; the "
+         "laptop gets a sealed, signed capsule over the clipboard."),
+        ("Vault", "Chunk → MiniLM → AES-GCM SQLite + RAM matrix; rank in RAM, "
+         "decrypt only winners; the loaded LLM writes every answer."),
+        ("Compute", "NPU for embeddings (QNN HTP, strictly gated), GPU for "
+         "the reasoner, CPU for ranking, StrongBox/TEE for keys."),
+        ("Security", "Keys never leave the keystore; capsules signed over a "
+         "canonical payload; laptop trusts only a pinned key."),
+        ("VLP", "VAULTLINK/2: typed pairing code, HMAC key schedule, "
+         "AES-GCM frames, direction keys, replay window, 20 s scrub."),
+        ("Evidence", "Measured on the iQOO 15 where possible; verified on "
+         "host otherwise; open gaps named, not hidden."),
     ]
-    for i, (name, size, frac, col, verdict) in enumerate(rows):
-        yy = 2.70 + i * 0.62
-        crossing = "never" not in verdict
-        txt(sl, M, yy, 2.55, 0.22, name, 9.6, INK if crossing else BODY, True)
-        txt(sl, M + 2.60, yy, 1.65, 0.22, size, 9, col, True)
-        meter(sl, M + 4.40, yy + 0.045, 4.20, frac,
-              col if crossing else mix(BG, DANGER, 0.42))
-        txt(sl, M + 8.80, yy, 3.10, 0.22, verdict.upper(), 7.6,
-            ACCENT if crossing else DIM, True, spc=1.0)
-        if i < len(rows) - 1:
-            hair(sl, M, yy + 0.44, CW, RULE_SOFT)
-
-    hair(sl, M, 5.88, CW, RULE)
-
-    rich(sl, M, 6.08, 7.6, 0.60,
-         [("The ratio is the argument. ", {"bold": True, "color": INK,
-                                           "size": 10.5}),
-          ("Roughly one part in 250,000 of what the vault holds ever becomes "
-           "visible to anything else - and that part is chosen by a similarity "
-           "search you ran yourself.",
-           {"size": 10.5, "color": BODY})], lh=1.28)
-
-    rrect(sl, 8.62, 6.00, 4.06, 0.68, fill=mix(BG, ACCENT, 0.09),
-          line=mix(BG, ACCENT, 0.28), lw=0.7)
-    txt(sl, 8.84, 6.14, 3.66, 0.20, "AND IT IS REVOCABLE", 7.5, ACCENT, True,
-        spc=1.2)
-    txt(sl, 8.84, 6.36, 3.66, 0.26,
-        "Delete the passages and the disclosure ends. A copy cannot be "
-        "recalled.", 8.2, BODY, lh=1.2)
+    for i, (k, v) in enumerate(rows):
+        y = 1.75 + i * 0.78
+        pill(sl, M, y, k.upper(), ACCENT, 1.2)
+        txt(sl, M + 1.4, y - 0.02, 6.6, 0.7, v, 11, INK, lh=1.22)
     return sl
 
 
-def slide_enforcement(prs):
-    sl = new_slide(prs)
-    chrome(sl, "07 · what is new",
-           "Privacy that is enforced, not promised.",
-           "The strongest claim in this project is also the cheapest to "
-           "check: the application asks the operating system for no network "
-           "access, so it has none.", "07")
-
-    chip(sl, M, 2.16, "verified")
-
-    rrect(sl, M, 2.44, 6.05, 2.62, fill=VOID, line=RULE, lw=0.8)
-    txt(sl, M + 0.26, 2.62, 5.50, 0.20,
-        "aapt2 dump permissions app-release.apk", 8, MUTED, False, MONO)
-    hair(sl, M + 0.26, 2.90, 5.53, RULE_SOFT)
-    perms = [("android.permission.INTERNET", "not requested"),
-             ("ACCESS_NETWORK_STATE", "not requested"),
-             ("READ_EXTERNAL_STORAGE", "not requested"),
-             ("ACCESS_FINE_LOCATION", "not requested")]
-    for i, (p, v) in enumerate(perms):
-        yy = 3.06 + i * 0.36
-        txt(sl, M + 0.26, yy, 3.60, 0.22, p, 8.4, BODY, False, MONO)
-        txt(sl, M + 4.00, yy, 1.80, 0.22, v, 8.4, ACCENT, True, font=MONO)
-    hair(sl, M + 0.26, 4.54, 5.53, RULE_SOFT)
-    txt(sl, M + 0.26, 4.68, 5.53, 0.24,
-        "0 permissions requested in the release build", 9.5, ACCENT, True,
-        font=MONO)
-
-    section_label(sl, 6.98, 2.44, "WHY THIS IS A DIFFERENT KIND OF CLAIM", 5.7,
-                  ACCENT)
-    bullet_rows(sl, 6.98, 2.76, 5.70, [
-        ("An auditor verifies it in seconds",
-         "One command against the shipped APK. No code review, no trust in our "
-         "build process, no reading of a privacy policy."),
-        ("It survives a compromised build",
-         "If the app were backdoored tomorrow, the exfiltration path still "
-         "would not exist - the OS never granted the capability."),
-        ("It is a property, not a policy",
-         "Policies change with a version bump and an email. A missing manifest "
-         "entry changes only by shipping a visibly different app."),
-    ], gap=0.86, tsize=10, bsize=8.8)
-
-    hair(sl, M, 5.42, CW, RULE_SOFT)
-    section_label(sl, M, 5.62, "THE OTHER THREE NOVELTIES", 6.0)
-    novel = [
-        ("Direction of trust",
-         "The personal device is the trusted core and the workstation is the "
-         "edge. Normally the small device asks the big one for help."),
-        ("Minimal disclosure",
-         "Even the trusted side sees only the passages it needs, never the "
-         "corpus and never the index."),
-        ("Silicon you already own",
-         "No new hardware, no per-token cost, no rate limit - and because "
-         "capture is local, a whiteboard photo becomes searchable without "
-         "touching a server."),
-    ]
-    cwid = 3.90
-    for i, (h, b) in enumerate(novel):
-        x = M + i * (cwid + 0.17)
-        rect(sl, x, 5.92, 0.036, 0.82, fill=ACCENT)
-        txt(sl, x + 0.18, 5.92, cwid - 0.24, 0.22, h, 9.4, INK, True)
-        txt(sl, x + 0.18, 6.18, cwid - 0.24, 0.60, b, 8.4, BODY, lh=1.26)
-    return sl
-
-
-def slide_usecases(prs):
-    sl = new_slide(prs)
-    chrome(sl, "08 · the real-world case",
-           "Who cannot upload, and therefore cannot use AI today.",
-           "These are not privacy-preference users. In each case the upload "
-           "itself is what is prohibited - by law, by contract, or by "
-           "physics.", "08")
-
-    cases = [
-        ("LEGAL", "Contracts, discovery, privileged files",
-         "Privilege does not survive disclosure to a third-party processor, "
-         "and client agreements routinely forbid it outright.",
-         "Uploading is a professional-conduct problem, not a preference."),
-        ("CLINICAL", "Patient notes, imaging reports, histories",
-         "DPDP and HIPAA make a cloud embedding call a regulated disclosure "
-         "with a named accountable party.",
-         "The consent form does not cover an AI vendor."),
-        ("ENGINEERING", "Proprietary source, pre-release designs",
-         "Source under NDA, unreleased hardware documents, and security "
-         "findings that must not be indexed anywhere.",
-         "Most employers already block the upload at the proxy."),
-        ("RESEARCH", "Unpublished data, embargoed manuscripts",
-         "Priority is lost the moment an unpublished result is retained by a "
-         "system that may train on it.",
-         "Embargo and third-party retention are incompatible."),
-        ("FIELD", "Survey, audit and inspection work offline",
-         "Mines, ships, rural clinics and secure facilities - sites with no "
-         "connectivity, where the phone is the only computer allowed in.",
-         "There is no server to upload to in the first place."),
-    ]
-    cwid = 2.25
-    for i, (tag, sub, body, kicker) in enumerate(cases):
-        x = M + i * (cwid + 0.18)
-        rrect(sl, x, 2.36, cwid, 3.36, fill=PANEL, line=RULE_SOFT, lw=0.7)
-        rect(sl, x, 2.36, cwid, 0.036, fill=ACCENT)
-        txt(sl, x + 0.20, 2.56, cwid - 0.40, 0.20, tag, 9, ACCENT, True, spc=1.2)
-        txt(sl, x + 0.20, 2.80, cwid - 0.40, 0.44, sub, 8.6, INK, True, lh=1.22)
-        hair(sl, x + 0.20, 3.34, cwid - 0.40, RULE_SOFT)
-        txt(sl, x + 0.20, 3.50, cwid - 0.40, 1.36, body, 8.2, BODY, lh=1.30)
-        hair(sl, x + 0.20, 4.88, cwid - 0.40, RULE_SOFT)
-        txt(sl, x + 0.20, 5.02, cwid - 0.40, 0.62, kicker, 8, MUTED, lh=1.26,
-            italic=True)
-
-    rrect(sl, M, 5.92, CW, 0.66, fill=mix(BG, ACCENT, 0.09),
-          line=mix(BG, ACCENT, 0.30), lw=0.7)
-    rich(sl, M + 0.26, 6.08, CW - 0.52, 0.36,
-         [("The shape they share: ", {"bold": True, "color": ACCENT,
-                                      "size": 9.6}),
-          ("the corpus is small, personal, and legally attached to one "
-           "individual - exactly the workload a phone can hold entirely, and "
-           "exactly the workload a shared server should never hold at all.",
-           {"size": 9.6, "color": INK})])
-    return sl
-
-
-def slide_evidence(prs):
-    sl = new_slide(prs)
-    chrome(sl, "09 · evidence",
-           "What is measured today, and what is still a target.",
-           "A bench prototype already runs the retrieval half of this on a "
-           "mid-range handset. These are its numbers, not projections.", "09")
-
-    LW = 5.90                                   # left column, clear of table
-    section_label(sl, M, 2.34, "MEASURED ON A REAL HANDSET", 4.2, ACCENT)
-    chip(sl, M + 3.10, 2.30, "measured")
-    txt(sl, M, 2.60, LW, 0.20,
-        "realme RMX3660 · Snapdragon 695 · Android 14 · release build", 8,
-        MUTED)
-
-    facts = [("233 ms", "QUERY EMBEDDING · 256 TOKENS", ACCENT),
-             ("567 ms", "MODEL LOAD, ONCE PER SESSION", INK),
-             ("12x", "XNNPACK OVER CPU KERNELS", ACCENT),
-             ("0", "PERMISSIONS IN THE APK", ACCENT)]
-    for i, (v, l, c) in enumerate(facts):
-        stat(sl, M + (i % 2) * 3.05, 2.94 + (i // 2) * 0.94, 2.90, v, l, c,
-             25, 7)
-
-    txt(sl, M, 4.86, LW, 0.50,
-        "2,782 ms fell to 224 ms once XNNPACK was enabled. Retrieval quality "
-        "was checked by hand against known-answer queries, and 13 of 13 unit "
-        "tests pass on chunking and tokenisation.", 8.6, BODY, lh=1.28)
-
-    rrect(sl, M, 5.52, LW, 1.16, fill=PANEL, line=mix(BG, AMBER, 0.26), lw=0.8)
-    txt(sl, M + 0.24, 5.70, LW - 0.48, 0.20,
-        "THE HONEST GAP - WHAT WE WILL NOT CLAIM ON STAGE", 7.5, AMBER, True,
-        spc=1.2)
-    txt(sl, M + 0.24, 5.94, LW - 0.48, 0.62,
-        "That the NPU path is proven. On a Snapdragon 695 it never "
-        "materialised, so the hackathon hardware has to be measured rather "
-        "than assumed. The security story is scoped, not yet shipped.",
-        8.4, BODY, lh=1.28)
-
-    table(sl, 7.05, 2.34, 5.63,
-          [("CAPABILITY", 0.32), ("TARGET BUILD", 0.38), ("TODAY", 0.30)],
-          [("Embedding", "NPU vendor delegate", "XNNPACK CPU"),
-           ("Vector index", "sqlite-vec ANN", "brute-force cosine"),
-           ("At rest", "SQLCipher + Keystore", "not yet"),
-           ("Bridge", "Office Kit transport", "USB / clipboard"),
-           ("Generation", "on-device SLM", "laptop model"),
-           ("Network perms", "none", "none")],
-          colors=[AMBER, AMBER, DANGER, AMBER, AMBER, ACCENT],
-          row_h=0.44, cell_size=8.6)
-
-    txt(sl, 7.05, 5.52, 5.63, 0.80,
-        "Only the last row is already where it needs to be - and it is the row "
-        "the whole argument rests on. Everything above it is engineering with "
-        "known answers, not research.", 8.8, BODY, lh=1.30)
-    return sl
-
-
-def slide_roadmap(prs):
-    sl = new_slide(prs)
-    chrome(sl, "10 · where it goes",
-           "Close the loop, then federate, then make it ambient.",
-           "Each step removes one more reason to send anything anywhere.",
-           "10")
-
-    phases = [
-        ("NEAR", "Generation moves on-device",
-         "A small language model reads the retrieved passages on the phone "
-         "itself. The loop closes entirely inside the vault, and the bridge "
-         "becomes optional rather than load-bearing.",
-         "The laptop stops being part of the threat model.", ACCENT, 0.34),
-        ("NEXT", "Vaults federate, peer to peer",
-         "Phone, laptop and workstation hold one personal index, synchronised "
-         "directly between devices you own, with no server in the middle "
-         "holding a key or a copy.",
-         "One corpus, many devices, still no third party.", ROADMAP, 0.62),
-        ("LATER", "Ingestion becomes ambient",
-         "Meetings, screenshots and notes are indexed continuously and "
-         "locally. Capture stops being a deliberate act and the vault fills "
-         "itself as you work.",
-         "Personal memory that was never uploadable to begin with.",
-         ROADMAP, 0.86),
-    ]
-    cwid = 3.90
-    for i, (tag, title, body, kicker, col, frac) in enumerate(phases):
-        x = M + i * (cwid + 0.17)
-        rrect(sl, x, 2.36, cwid, 2.72, fill=PANEL, line=RULE_SOFT, lw=0.7)
-        rect(sl, x, 2.36, cwid, 0.036, fill=col)
-        txt(sl, x + 0.24, 2.58, 1.4, 0.20, tag, 7.5, col, True, spc=1.4)
-        txt(sl, x + 0.24, 2.84, cwid - 0.48, 0.44, title, 12.5, INK, False,
-            DISPLAY, lh=1.12)
-        txt(sl, x + 0.24, 3.40, cwid - 0.48, 1.00, body, 8.8, BODY, lh=1.30)
-        hair(sl, x + 0.24, 4.44, cwid - 0.48, RULE_SOFT)
-        txt(sl, x + 0.24, 4.60, cwid - 0.48, 0.40, kicker, 8.4, col, lh=1.24)
-        meter(sl, x + 0.24, 4.86, cwid - 0.48, frac, col, h=0.055)
-
-    hair(sl, M, 5.42, CW, RULE)
-    section_label(sl, M, 5.62, "THE LONGER ARC", 6.0)
-    txt(sl, M, 5.92, 8.6, 0.70,
-        "Every year more neural silicon ships inside devices people already "
-        "carry. The data is already there. The compute is already there. The "
-        "only thing still missing is the assumption that it has to leave.",
-        11.5, INK, lh=1.30)
-    txt(sl, 9.40, 5.96, 3.28, 0.28, "BUILD THE VAULT.", 12, ACCENT, True,
-        DISPLAY, align=PP_ALIGN.RIGHT)
-    txt(sl, 9.40, 6.28, 3.28, 0.28, "KEEP THE CORPUS.", 12, ACCENT, True,
-        DISPLAY, align=PP_ALIGN.RIGHT)
-    return sl
-
-
-def slide_risks(prs):
-    sl = new_slide(prs)
-    chrome(sl, "11 · limits and risks",
-           "Where this is hard, and what we do about it.",
-           "Stated plainly, because every one of these is a question a "
-           "reviewer will ask.", "11")
-
-    txt(sl, M + 3.75, 2.16, 4.15, 0.20, "THE RISK", 7.5, MUTED, True, spc=1.3)
-    txt(sl, M + 8.20, 2.16, 4.48, 0.20, "THE MITIGATION", 7.5, ACCENT, True,
-        spc=1.3)
-
-    risks = [
-        ("The NPU may not be reachable", AMBER,
-         "Vendor delegates vary by chipset and OS build. On our test handset "
-         "NNAPI never materialised at all.",
-         "XNNPACK on CPU is already fast enough at 233 ms. The NPU is upside, "
-         "not a dependency."),
-        ("Retrieval quality is the real ceiling", AMBER,
-         "A 384-dimension model on a small corpus will miss paraphrase and "
-         "cross-document reasoning a large model would catch.",
-         "Hybrid BM25 plus vector ranking, and a reranker small enough to run "
-         "on the same NPU."),
-        ("Corpus size has a hard limit", MUTED,
-         "Brute-force cosine stops being acceptable somewhere in the tens of "
-         "thousands of chunks.",
-         "sqlite-vec gives approximate search in the same file, with no daemon "
-         "and no new trust boundary."),
-        ("The bridge is a new attack surface", DANGER,
-         "Anything that carries passages off the phone is, by definition, the "
-         "one place data can leak.",
-         "Pairing is explicit and per-session, the payload is passages only, "
-         "and it is a direct link with no server to intercept."),
-        ("On-device generation is not free", MUTED,
-         "A model small enough for phone memory is meaningfully weaker than "
-         "the frontier model a user would otherwise pick.",
-         "Generation stays pluggable. Privacy is guaranteed at the retrieval "
-         "layer, so the model is the user's trade to make."),
-    ]
-    y = 2.44
-    for i, (title, col, risk, fix) in enumerate(risks):
-        rect(sl, M, y + 0.02, 0.036, 0.62, fill=col)
-        txt(sl, M + 0.20, y, 3.35, 0.48, title, 9.6, INK, True, lh=1.18)
-        txt(sl, M + 3.75, y + 0.02, 4.15, 0.66, risk, 8.5, BODY, lh=1.26)
-        txt(sl, M + 8.20, y + 0.02, 4.48, 0.66, fix, 8.5, ACCENT, lh=1.26)
-        if i < len(risks) - 1:
-            hair(sl, M, y + 0.74, CW, RULE_SOFT)
-        y += 0.86
-    return sl
-
-
-def slide_summary(prs):
-    sl = new_slide(prs)
-    rect(sl, 0, 0, 13.333, 7.5, fill=VOID)
-    starfield(sl, 0.2, 0.3, 12.9, 6.9, n=70, seed=41)
-    scrim(sl, 0, 0, 13.333, 7.5, [(0, 0.90), (0.5, 0.96), (1, 0.90)], angle=90,
-          base=VOID)
-    for i in range(6):
-        rect(sl, 2.222 * i, 0, 2.222, 0.115,
-             fill=mix(ACCENT, VOID, i / 5 * 0.86))
-
-    txt(sl, M, 0.62, 9.0, 0.24, "12 · IN ONE PAGE", 8.5, MUTED, True, spc=1.6)
-    txt(sl, M, 1.02, 11.4, 0.66,
-        "The data is already on the phone. So is the compute.", 30, INK, False,
-        DISPLAY, lh=1.04)
-    txt(sl, M, 1.84, 10.6, 0.34,
-        "Vault makes retrieval a local operation, and disclosure an explicit, "
-        "revocable, byte-countable act.", 12, ACCENT, lh=1.2)
-
-    points = [
-        ("THE PROBLEM",
-         "Using AI on your own documents currently means uploading them, and "
-         "the plaintext has to be readable on the far side to be embedded."),
-        ("THE INVERSION",
-         "The phone becomes the trusted core holding corpus, index and "
-         "encoder. The laptop becomes the edge, and sees only passages."),
-        ("THE PROOF",
-         "233 ms per query embedding on a mid-range handset, and a release "
-         "build that requests zero permissions - verifiable in one command."),
-        ("THE MARKET",
-         "Legal, clinical, engineering, research and field work: corpora that "
-         "are small, personal, and prohibited from being uploaded at all."),
-    ]
-    for i, (h, b) in enumerate(points):
-        x = M + (i % 2) * 6.20
-        y = 2.66 + (i // 2) * 1.28
-        rect(sl, x, y, 0.036, 0.98, fill=ACCENT)
-        txt(sl, x + 0.20, y, 5.60, 0.20, h, 8, ACCENT, True, spc=1.3)
-        txt(sl, x + 0.20, y + 0.26, 5.70, 0.74, b, 9.8, INK, lh=1.30)
-
-    hair(sl, M, 5.42, CW, RULE)
-    stats = [("1 GB", "STAYS ON THE PHONE", INK),
-             ("~800", "TOKENS EVER LEAVE", ACCENT),
-             ("233 ms", "MEASURED QUERY EMBED", ACCENT),
-             ("0", "NETWORK PERMISSIONS", ACCENT),
-             ("0", "PER-TOKEN COST", INK)]
-    for i, (v, l, c) in enumerate(stats):
-        stat(sl, M + i * 2.45, 5.66, 2.35, v, l, c, 26, 7)
-
-    hair(sl, M, FOOT_Y, CW, RULE_SOFT)
-    txt(sl, M, PAGE_Y, 10.5, 0.22,
-        "VAULT / POCKETRAG  ·  TEAM jSONs  ·  BUILD THE VAULT. KEEP THE "
-        "CORPUS.", 8, DIM, spc=0.6)
-    txt(sl, 11.90, PAGE_Y, 0.78, 0.22, "12", 8.5, MUTED, True,
-        align=PP_ALIGN.RIGHT, spc=0.8)
-    return sl
+SLIDES = (s_hero, s_problem, s_overall, s_repo, s_app, s_ingest, s_query,
+          s_capsule, s_compute, s_npu, s_security_overview, s_at_rest,
+          s_signing, s_trust, s_vlp_loop, s_vlp_crypto, s_vlp_threats,
+          s_residue, s_desktop, s_telemetry, s_evidence, s_learned, s_roadmap,
+          s_summary)
 
 
 # -------------------------------------------------------------------- main --
@@ -1143,13 +1477,8 @@ def build(path=None):
     prs = Presentation()
     prs.slide_width = Inches(13.333)
     prs.slide_height = Inches(7.5)
-
-    for fn in (slide_hero, slide_problem, slide_existing, slide_inversion,
-               slide_architecture, slide_pipeline, slide_disclosure,
-               slide_enforcement, slide_usecases, slide_evidence,
-               slide_roadmap, slide_risks, slide_summary):
+    for fn in SLIDES:
         fn(prs)
-
     prs.save(path)
     print(f"wrote {path} - {len(prs.slides._sldIdLst)} slides")
 
