@@ -25,10 +25,21 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
           
+      - name: Install Linux Dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y cmake ninja-build pkg-config libgtk-3-dev libsqlite3-dev
+          
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
+          
+      - name: Create Dummy Assets
+        run: |
+          mkdir -p assets/models
+          touch assets/models/minilm_l6_v2.tflite
+          touch assets/models/vocab.txt
           
       - name: Install Dependencies
         run: flutter pub get
